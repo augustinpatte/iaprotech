@@ -1,0 +1,95 @@
+# ============================================================
+# Privacy Proxy — Docker Compose stack
+#
+# Services:
+#   backend  — FastAPI + Presidio (PII redaction + LLM proxy)
+#   redis    — Vault storage pour les mappings PII (AOF activé)
+#   frontend — React UI (Vite build + preview)
+#
+# Réseau privé proxy_net : backend et redis ne sont pas exposés
+# directement sur Internet dans une config de prod.
+# ============================================================
+
+services:
+  # ----------------------------------------------------------
+  # Redis — stockage chiffré du vault PII
+  # AOF (Append-Only File) : durabilité des données entre redémarrages
+  # ----------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --requirepass "${REDIS_PASSWORD}"
+    volumes:
+      - redis_data:/data
+    networks:
+      - proxy_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------------------------------------
+  # Backend — FastAPI + Presidio
+  # Build context : ./backend (contient son propre Dockerfile)
+  # ----------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - proxy_net
+    healthcheck:
+      test: ["CMD", "python", "healthcheck.py"]
+      interval: 60s
+      timeout: 15s
+      start_period: 300s
+      retries: 3
+
+  # ----------------------------------------------------------
+  # Frontend — React (Vite build + vite preview)
+  # VITE_API_URL doit être accessible depuis le navigateur,
+  # donc on utilise localhost (pas le hostname interne Docker).
+  # ----------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: http://localhost:8000
+    restart: unless-stopped
+    environment:
+      VITE_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_started
+    networks:
+      - proxy_net
+
+# ----------------------------------------------------------
+# Réseau privé entre les services
+# ----------------------------------------------------------
+networks:
+  proxy_net:
+    driver: bridge
+
+# ----------------------------------------------------------
+# Volumes nommés (persistance entre docker-compose down/up)
+# ----------------------------------------------------------
+volumes:
+  redis_data:
