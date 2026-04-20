@@ -145,10 +145,12 @@ class Settings(BaseSettings):
     # -----------------------------------------------------------------------
     VAULT_ENCRYPTION_KEY: str = Field(
         ...,
+        min_length=32,
         description=(
-            "Clé Fernet (AES-256-CBC + HMAC-SHA256) encodée en base64 URL-safe. "
-            "Générer avec : python -c \"from cryptography.fernet import Fernet; "
-            "print(Fernet.generate_key().decode())\""
+            "Cle maitre du vault. Utilisee comme entree PBKDF2-SHA256 pour "
+            "deriver les cles AES-256-GCM qui chiffrent les donnees PII dans "
+            "Redis. Doit faire au moins 32 caracteres avec entropie elevee. "
+            "Generer avec: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
         ),
     )
 
@@ -347,20 +349,25 @@ class Settings(BaseSettings):
 
     @field_validator("VAULT_ENCRYPTION_KEY")
     @classmethod
-    def vault_key_is_valid_fernet(cls, v: str) -> str:
+    def _validate_vault_key_entropy(cls, v: str) -> str:
         if v in ("CHANGE_ME_FERNET_KEY", "", "changeme"):
             raise ValueError(
-                "VAULT_ENCRYPTION_KEY invalide. "
-                "Générer : python -c \"from cryptography.fernet import Fernet; "
-                "print(Fernet.generate_key().decode())\""
+                "VAULT_ENCRYPTION_KEY non configuree. Generer avec: "
+                "python -c \"import secrets; print(secrets.token_urlsafe(32))\""
             )
-        # Fernet keys are 32 bytes encoded in URL-safe base64 (44 chars with padding)
-        try:
-            decoded = base64.urlsafe_b64decode(v)
-            if len(decoded) != 32:
-                raise ValueError("La clé Fernet décodée doit faire exactement 32 octets.")
-        except Exception as exc:
-            raise ValueError(f"VAULT_ENCRYPTION_KEY n'est pas une clé Fernet valide : {exc}") from exc
+        if len(v) < 32:
+            raise ValueError(
+                "VAULT_ENCRYPTION_KEY doit faire au moins 32 caracteres"
+            )
+        if v.lower() in {"password", "secret", "test", "admin", "default"}:
+            raise ValueError(
+                "VAULT_ENCRYPTION_KEY trop faible (valeur triviale detectee)"
+            )
+        if len(set(v)) < 10:
+            raise ValueError(
+                "VAULT_ENCRYPTION_KEY a trop peu de caracteres uniques "
+                "(entropie insuffisante)"
+            )
         return v
 
     @field_validator("REDIS_URL")
