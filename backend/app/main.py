@@ -356,7 +356,7 @@ app.add_middleware(
 # 3. Security headers (appliques sur toutes les reponses)
 app.add_middleware(SecurityHeadersMiddleware)
 
-# 4. JWT Auth + SecurityContext (remplace AuthMiddleware)
+# 4. JWT Auth + SecurityContext
 app.add_middleware(SecurityMiddleware)
 
 # ---------------------------------------------------------------------------
