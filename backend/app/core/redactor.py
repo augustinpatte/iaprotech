@@ -598,7 +598,8 @@ class Redactor:
 
         for token, original in mapping.items():
             # re.escape gère les crochets et underscores
-            text = re.sub(re.escape(token), original, text, flags=re.IGNORECASE)
+            # Lambda neutralise l'interpretation des backslashes dans le replacement
+            text = re.sub(re.escape(token), lambda _m, _o=original: _o, text, flags=re.IGNORECASE)
 
         return text
 

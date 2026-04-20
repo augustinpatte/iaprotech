@@ -523,7 +523,7 @@ class Vault(VaultInterface):
         if not mapping:
             return text
         for token, original in mapping.items():
-            text = re.sub(re.escape(token), original, text, flags=re.IGNORECASE)
+            text = re.sub(re.escape(token), lambda _m, _o=original: _o, text, flags=re.IGNORECASE)
         return text
 
     # ------------------------------------------------------------------
