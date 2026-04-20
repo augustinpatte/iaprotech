@@ -102,9 +102,16 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                 r = await _get_redis()
                 if r and await r.exists(f"jti_bl:{jti}"):
                     logger.info("security.token_revoked | user=%s", hash_id(user_id))
-                    return _unauthorized("Token revoque. Reconnectez-vous.")
+                    return _unauthorized("Token revoque.")
             except Exception as exc:
-                logger.warning("security.jti_check_failed | %s", type(exc).__name__)
+                logger.warning(
+                    "security.jti_check_failed | %s | fail-closed: refusing request",
+                    type(exc).__name__,
+                )
+                return _unauthorized(
+                    "Verification de securite temporairement indisponible. "
+                    "Reconnectez-vous."
+                )
 
         # 3b. Suspension membre : verifie si l'utilisateur a ete retire de son org.
         # La cle suspended:{user_id} est ecrite par OrgManager.remove_member() avec
