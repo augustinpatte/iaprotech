@@ -264,7 +264,13 @@ async def lifespan(app: FastAPI):
             settings.DEBUG, settings.LLM_PROVIDER, settings.REDACTION_ENGINE,
         )
     except Exception as exc:
-        logger.error("Erreur demarrage: %s", exc)
+        logger.critical(
+            "DEMARRAGE_ECHOUE | L'application ne peut pas demarrer sainement | erreur=%s",
+            exc,
+            exc_info=True,
+        )
+        # Crash-fast : mieux vaut ne pas demarrer que demarrer casse.
+        raise SystemExit(1) from exc
 
     yield
 
