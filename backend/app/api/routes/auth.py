@@ -703,6 +703,14 @@ async def register(body: RegisterRequest):
             detail="L'email est obligatoire.",
         )
 
+    # SECURITY: enforce invite-only model when system is already bootstrapped
+    if await _any_users_exist() and not body.invite_token:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Un invite_token est requis pour creer un compte. "
+                   "Demandez une invitation a un administrateur.",
+        )
+
     _enforce_password(body.password)
 
     if await _user_exists(body.username):
@@ -776,95 +784,3 @@ async def register(body: RegisterRequest):
         username=body.username,
         message="Compte créé. En attente de validation par l'administrateur.",
     )
-
-    # Systeme non initialise : renvoyer vers /bootstrap
-    if not await _any_users_exist():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "Systeme non initialise. "
-                "Creez le premier compte admin via POST /api/auth/bootstrap."
-            ),
-        )
-
-    # invite_token requis sur systeme initialise
-    if not body.invite_token:
-        logger.warning(
-            "auth.register: tentative sans invite_token | user=%s",
-            _h(body.username),
-        )
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "Un invite_token est requis pour creer un compte. "
-                "Demandez une invitation a un administrateur."
-            ),
-        )
-
-    # email obligatoire quand un invite_token est fourni
-    if not body.email:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="L'email est obligatoire pour valider l'invitation.",
-        )
-
-    # --- etape 1 : valider invite_token + email AVANT toute creation ---
-    # validate_invite() leve HTTP 403 si token invalide/expire ou email mismatch.
-    # Aucun compte n'est cree si cette etape echoue.
-    from app.core.org_manager import get_org_manager  # noqa: PLC0415
-    mgr = get_org_manager()
-    try:
-        invite_data = await mgr.validate_invite(body.invite_token, body.email)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.warning("auth.register: validate_invite failed | %s", type(exc).__name__)
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Invite_token invalide ou expire.",
-        )
-
-    # --- etape 2 : politique mot de passe ---
-    _enforce_password(body.password)
-
-    # --- etape 3 : username disponible ? ---
-    if await _user_exists(body.username):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Ce nom d'utilisateur est deja utilise.",
-        )
-
-    # --- etape 4 : creer le compte — role TOUJOURS "member" ---
-    org_id = invite_data.get("org_id", "")
-    await _set_user(body.username, {
-        "hashed_password": pwd_context.hash(body.password),
-        "role": "member",
-        "org_id": org_id,
-        "is_active": True,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    })
-
-    # --- etape 5 : consommer le token + attacher a l'org (synchrone) ---
-    # consume_invite() : add_member d'abord, supprime le token ensuite.
-    # Si cette etape echoue, le compte existe mais n'est pas rattache a une org —
-    # un admin peut corriger manuellement (cas extremement rare).
-    try:
-        await mgr.consume_invite(body.invite_token, body.username)
-    except HTTPException:
-        # Token consomme entre validate et consume (race condition improbable)
-        logger.error(
-            "auth.register: consume_invite echoue apres creation compte | user=%s",
-            _h(body.username),
-        )
-        # Le compte est cree mais orphelin — loggue pour intervention admin
-    except Exception as exc:
-        logger.error(
-            "auth.register: consume_invite exception | user=%s | %s",
-            _h(body.username), type(exc).__name__,
-        )
-
-    logger.info(
-        "auth.register: nouveau membre | user=%s | org=%s",
-        _h(body.username), _h(org_id) if org_id else "none",
-    )
-    return UserOut(username=body.username, role="member")
