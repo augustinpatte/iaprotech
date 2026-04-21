@@ -13,7 +13,6 @@ Validation au démarrage :
     validate_config()   # appelé dans main.py → startup_event
 """
 
-import base64
 import re
 from typing import Any, Dict, List, Literal
 
@@ -141,7 +140,7 @@ class Settings(BaseSettings):
     )
 
     # -----------------------------------------------------------------------
-    # Vault — chiffrement AES-256 via Fernet
+    # Vault — chiffrement AES-256-GCM avec PBKDF2-SHA256
     # -----------------------------------------------------------------------
     VAULT_ENCRYPTION_KEY: str = Field(
         ...,
@@ -455,14 +454,6 @@ def validate_config() -> None:
         errors.append(
             f"  • SECRET_KEY trop courte ({len(settings.SECRET_KEY)} cars, minimum 32)."
         )
-
-    # Clé Fernet décodable
-    try:
-        decoded = base64.urlsafe_b64decode(settings.VAULT_ENCRYPTION_KEY)
-        if len(decoded) != 32:
-            errors.append("  • VAULT_ENCRYPTION_KEY : la clé décodée doit faire 32 octets.")
-    except Exception as exc:
-        errors.append(f"  • VAULT_ENCRYPTION_KEY invalide : {exc}")
 
     # Clé API LLM cohérente avec le fournisseur (fallback quand router désactivé)
     provider_key_map = {

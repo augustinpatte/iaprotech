@@ -8,8 +8,7 @@ Verification dans cet ordre (arret immediat si echec) :
   4. Role Redis == source de verite (detecte promotions/demotions)
   5. Injection SecurityContext(user_id, org_id, role) dans request.state
 
-Ce middleware etend AuthMiddleware en ajoutant SecurityContext.
-Il peut remplacer AuthMiddleware ou coexister avec.
+Middleware unique d'authentification JWT et d'injection du SecurityContext.
 """
 from __future__ import annotations
 

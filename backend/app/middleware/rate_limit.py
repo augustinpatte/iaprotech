@@ -43,7 +43,7 @@ UPLOAD_LIMIT: str = "10/minute"
 def _rate_key(request: Request) -> str:
     """
     Retourne la clé de rate-limit :
-      1. username extrait du JWT (via request.state.user_id — injecté par AuthMiddleware)
+      1. username extrait du JWT (via request.state.user_id — injecté par SecurityMiddleware)
       2. IP du client en fallback (pour les routes publiques ou si user_id absent)
     """
     user_id = getattr(request.state, "user_id", None)
