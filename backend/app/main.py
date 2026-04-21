@@ -317,6 +317,7 @@ async def limit_request_size(request: Request, call_next):
     max_size = settings.MAX_FILE_SIZE_MB * 1024 * 1024
     content_length = request.headers.get("content-length")
 
+    # Cas 1 : Content-Length present → check rapide
     if content_length:
         try:
             if int(content_length) > max_size:
@@ -334,7 +335,32 @@ async def limit_request_size(request: Request, call_next):
                 status_code=400,
                 content={"detail": "En-tete Content-Length invalide"},
             )
+        return await call_next(request)
 
+    # Cas 2 : pas de Content-Length (chunked) → streamer et limiter
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > max_size:
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "detail": (
+                        f"Fichier trop grand (chunked). Maximum : "
+                        f"{settings.MAX_FILE_SIZE_MB}Mo"
+                    )
+                },
+            )
+
+    # Rebind le body pour que les handlers puissent le re-lire
+    async def _receive():
+        return {
+            "type": "http.request",
+            "body": bytes(body),
+            "more_body": False,
+        }
+
+    request._receive = _receive
     return await call_next(request)
 
 
