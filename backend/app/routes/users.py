@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from app.api.routes.auth import (
     TokenData,
+    _get_redis,
     _enforce_password,
     _get_user,
     _set_user,
@@ -24,6 +25,11 @@ from app.core.org_manager import get_org_manager
 from app.core.usage_tracker import get_monthly_usage
 from app.middleware.rate_limit import limiter
 from app.utils.logger import get_logger, hash_id as _h
+
+class DeleteMyAccountRequest(BaseModel):
+    password: str
+    confirm: str
+
 
 router = APIRouter()
 _pm = ProjectManager()
@@ -59,6 +65,17 @@ class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str
     confirm_password: str
+
+
+async def _scan_keys(redis, pattern: str, count: int = 100) -> list[str]:
+    keys: list[str] = []
+    cursor = 0
+    while True:
+        cursor, batch = await redis.scan(cursor, match=pattern, count=count)
+        keys.extend(batch)
+        if cursor == 0:
+            break
+    return keys
 
 
 def _provider_api_keys_status(user: dict | None) -> dict[str, bool]:
@@ -225,6 +242,141 @@ async def update_me(
         tokens_month=(await get_monthly_usage(current_user.username)).total_tokens,
         provider_api_keys_configured=_provider_api_keys_status(user),
     )
+
+
+@router.delete("/users/me", status_code=status.HTTP_200_OK)
+@limiter.limit("3/hour")
+async def delete_my_account(
+    body: DeleteMyAccountRequest,
+    request: Request,
+    current_user: TokenData = Depends(get_current_user),
+):
+    """
+    RGPD Art. 17 — Droit a l'effacement (self-service).
+    Supprime le compte utilisateur et TOUTES les donnees associees.
+    """
+    username = current_user.username
+
+    user = await _get_user(username)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Utilisateur introuvable.",
+        )
+
+    try:
+        password_ok = pwd_context.verify(body.password, user.get("hashed_password", ""))
+    except Exception:
+        password_ok = False
+    if not password_ok:
+        logger.warning(
+            "delete_my_account.bad_password | user=%s",
+            _h(username),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Mot de passe incorrect.",
+        )
+
+    if body.confirm != "DELETE MY ACCOUNT":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Confirmation invalide. Envoyer exactement 'DELETE MY ACCOUNT'.",
+        )
+
+    org_id = (user.get("org_id") or "").strip()
+    if user.get("role") == "admin" and org_id:
+        manager = get_org_manager()
+        other_admins = []
+        try:
+            members = await manager.list_members(org_id)
+            other_admins = [
+                member
+                for member in members
+                if member.user_id != username
+                and member.role == "admin"
+                and getattr(member, "is_active", True)
+            ]
+        except Exception:
+            other_admins = []
+
+        if not other_admins:
+            logger.warning(
+                "delete_my_account.last_admin_blocked | user=%s | org=%s",
+                _h(username),
+                _h(org_id),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Vous etes le dernier administrateur de votre organisation. "
+                    "Designez un autre admin avant de supprimer votre compte, "
+                    "ou contactez le support pour dissoudre l'organisation."
+                ),
+            )
+
+    redis = await _get_redis()
+    if redis is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Service temporairement indisponible.",
+        )
+
+    summaries = await _pm.list_projects(username)
+    for summary in summaries:
+        try:
+            removed = await _pm.delete_project(summary.project_id, username)
+        except VaultDeletionError as exc:
+            logger.error(
+                "delete_my_account.vault_error | user=%s | %s",
+                _h(username),
+                type(exc).__name__,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "Impossible de purger le vault. Suppression annulee pour "
+                    "garantir l'absence de residus chiffres. Reessayez plus tard."
+                ),
+            ) from exc
+        if not removed:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Impossible de supprimer le projet {summary.project_id}.",
+            )
+
+    deleted_keys = 0
+    deleted_keys += await redis.delete(f"user:{username}")
+    await redis.srem("index:users", username)
+    deleted_keys += await redis.delete(f"user:org:{username}")
+    deleted_keys += await redis.delete(f"user_projects:{username}")
+    deleted_keys += await redis.delete(f"user:jti:{username}")
+
+    if org_id:
+        deleted_keys += await redis.delete(f"org:member:{org_id}:{username}")
+        await redis.srem(f"org:members:{org_id}", username)
+
+    usage_month_keys = await _scan_keys(redis, f"usage:month:{username}:*")
+    usage_idx_keys = await _scan_keys(redis, f"usage:idx:{username}")
+    usage_rec_keys = await _scan_keys(redis, f"usage:rec:{username}:*")
+    audit_keys = await _scan_keys(redis, f"audit:{username}:*")
+    keys_to_delete = usage_month_keys + usage_idx_keys + usage_rec_keys + audit_keys
+    if keys_to_delete:
+        deleted_keys += await redis.delete(*keys_to_delete)
+
+    logger.warning(
+        "delete_my_account.completed | user=%s | projects_deleted=%d | deleted_keys=%d",
+        _h(username),
+        len(summaries),
+        deleted_keys,
+    )
+
+    return {
+        "status": "deleted",
+        "message": "Votre compte et toutes vos donnees ont ete supprimes.",
+        "projects_deleted": len(summaries),
+        "rgpd_article": "17",
+    }
 
 
 @router.post("/users/me/change-password")
