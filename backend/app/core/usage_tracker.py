@@ -27,7 +27,7 @@ from app.api.exception_handlers import ServiceUnavailableError
 from app.config import settings
 from app.core.result import Result, err, ok
 from app.models.usage import MonthlyUsage, UsageRecord
-from app.utils.logger import _h, get_logger
+from app.utils.logger import get_logger, hash_id as _h
 
 logger = get_logger(__name__)
 

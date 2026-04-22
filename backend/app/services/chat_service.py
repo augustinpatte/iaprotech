@@ -34,7 +34,7 @@ from app.core.router import (
     select_model,
 )
 from app.core.usage_tracker import get_monthly_usage, track_usage
-from app.utils.logger import _h, get_logger
+from app.utils.logger import get_logger, hash_id as _h
 
 logger = get_logger(__name__)
 
