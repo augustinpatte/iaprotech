@@ -12,9 +12,13 @@ import redis.asyncio as aioredis
 from app.config import settings
 from app.utils.logger import get_logger
 
+# RGPD: audit trail retention. 2 years is a compromise between
+# incident investigation needs and data minimization principle.
+# Legal basis: Art. 5.1.e RGPD + French commercial code prescription (5 years).
+_AUDIT_TTL_SECONDS = 60 * 60 * 24 * 365 * 2  # 730 days = 2 years
+
 logger = get_logger(__name__)
 
-_AUDIT_TTL_SECONDS = 90 * 24 * 3600
 _redis_client: Optional[aioredis.Redis] = None
 
 
