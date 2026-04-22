@@ -135,7 +135,7 @@ async def invite_member(
         raise HTTPException(status_code=404, detail="Aucune organisation trouvee.")
 
     token = await mgr.create_invite_token(org.org_id, body.email, body.role)
-    logger.info("org.invite | org_id=%s | email=%s | by=%s", _h(org.org_id), _h(body.email), _h(current_user.username))
+    logger.info("org.invite | org_id=%s | by=%s", _h(org.org_id), _h(current_user.username))
     return {
         "token": token,
         "org_id": org.org_id,
