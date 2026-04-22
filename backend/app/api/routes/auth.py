@@ -26,6 +26,7 @@ from pydantic import BaseModel
 
 from app.config import settings
 from app.core.result import Result, ok, err
+from app.middleware.rate_limit import limiter
 from app.utils.logger import get_logger
 import hashlib
 
@@ -509,7 +510,8 @@ async def get_system_status():
 
 
 @router.post("/bootstrap", response_model=UserOut, status_code=201)
-async def bootstrap(body: BootstrapRequest):
+@limiter.limit("3/hour")
+async def bootstrap(request: Request, body: BootstrapRequest):
     """
     Cree le PREMIER compte admin. Seul chemin vers un role admin.
 
@@ -695,7 +697,8 @@ async def _mark_invite_status(token: str, **updates) -> None:
 
 
 @router.post("/register", response_model=RegisterResponse, status_code=201)
-async def register(body: RegisterRequest):
+@limiter.limit("5/minute")
+async def register(request: Request, body: RegisterRequest):
     email = (body.email or "").strip().lower()
     if not email:
         raise HTTPException(
