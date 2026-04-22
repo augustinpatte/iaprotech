@@ -7,7 +7,7 @@ from typing import Optional
 
 from app.core.interfaces import VaultInterface, RedactorInterface
 from app.core.result import Result, ok, err
-from app.utils.logger import get_logger
+from app.utils.logger import get_logger, hash_id as _h
 
 logger = get_logger(__name__)
 
@@ -39,7 +39,7 @@ class UploadService:
         try:
             text = await extract_text(file_bytes, filename)
         except Exception as exc:
-            logger.error("upload_service.extract ERREUR | file=%s | %s", filename, type(exc).__name__)
+            logger.error("upload_service.extract ERREUR | file=%s | %s", _h(filename), type(exc).__name__)
             return err(f"Extraction fichier echouee: {type(exc).__name__}", "EXTRACT_ERROR")
 
         result = await self.redactor.pseudonymize(text, entities=entities)

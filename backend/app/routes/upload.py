@@ -538,7 +538,7 @@ async def run_upload_job_worker() -> None:
                     _h(job_id),
                     job_type,
                     _h(user_id),
-                    filename,
+                    _h(filename),
                 )
                 await job_queue.set_status(
                     job_id,
@@ -588,7 +588,7 @@ async def run_upload_job_worker() -> None:
                     "upload.worker_job_done | job=%s | user=%s | file=%s",
                     _h(job_id),
                     _h(user_id),
-                    filename,
+                    _h(filename),
                 )
                 await _safe_audit_log(
                     AuditEvent.build(
