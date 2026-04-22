@@ -303,13 +303,17 @@ async def log_exceptions(request: Request, call_next):
         response = await call_next(request)
         return response
     except Exception as exc:
+        user_id = getattr(getattr(request, "state", None), "user_id", None)
+        if not user_id:
+            user_id = getattr(getattr(getattr(request, "state", None), "security", None), "user_id", None)
         logger.error(
-            "WORKER_CRASH | path=%s | error=%s | trace=%s",
+            "WORKER_CRASH | path=%s | user=%s | error=%s | trace=%s",
             request.url.path,
+            _h(user_id) if user_id else "?",
             str(exc),
             traceback.format_exc(),
         )
-        return JSONResponse(status_code=500, content={"detail": str(exc)})
+        return JSONResponse(status_code=500, content={"detail": "Erreur interne"})
 
 
 @app.middleware("http")
