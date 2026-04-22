@@ -27,7 +27,7 @@ from app.api.exception_handlers import ServiceUnavailableError
 from app.config import settings
 from app.core.result import Result, err, ok
 from app.models.usage import MonthlyUsage, UsageRecord
-from app.utils.logger import get_logger
+from app.utils.logger import _h, get_logger
 
 logger = get_logger(__name__)
 
@@ -172,7 +172,7 @@ async def track_usage(
 
     redis_result = await _get_redis_result()
     if not redis_result.ok:
-        logger.warning("track_usage indisponible | user=%s | reason=%s", user_id, redis_result.message)
+        logger.warning("track_usage indisponible | user=%s | reason=%s", _h(user_id), redis_result.message)
         return redis_result
 
     redis = redis_result.value
