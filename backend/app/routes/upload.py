@@ -20,6 +20,7 @@ import base64
 import io
 import json
 import mimetypes
+import traceback
 from datetime import datetime, timezone
 from functools import partial
 from typing import Optional
@@ -631,14 +632,20 @@ async def run_upload_job_worker() -> None:
                     )
                 )
             except Exception as exc:
-                logger.exception("upload.worker_failed | job=%s", _h(job_id))
+                logger.error(
+                    "upload.worker_failed | job=%s | user=%s | error=%s | trace=%s",
+                    _h(job_id),
+                    _h(user_id) if user_id else "?",
+                    str(exc),
+                    traceback.format_exc(),
+                )
                 await job_queue.set_result(
                     job_id,
                     {
                         "job_id": job_id,
                         "status": "error",
                         "user_id": user_id,
-                        "error": str(exc) or "Le traitement du fichier a echoue.",
+                        "error": "Le traitement du fichier a échoué.",
                         "error_code": type(exc).__name__,
                         "completed_at": datetime.now(timezone.utc).isoformat(),
                     },

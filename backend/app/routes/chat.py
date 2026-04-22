@@ -9,7 +9,7 @@ GET  /models      : liste des modeles disponibles
 from __future__ import annotations
 
 import asyncio
-import hashlib
+import traceback
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
@@ -24,7 +24,7 @@ from app.core.interfaces import LLMRouterInterface, RedactorInterface, VaultInte
 from app.core.policy_engine import get_effective_policy
 from app.middleware.rate_limit import limiter
 from app.services.chat_service import ChatService
-from app.utils.logger import get_logger
+from app.utils.logger import get_logger, hash_id as _h
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -33,11 +33,6 @@ _vault_instance: Optional[VaultInterface] = None
 _redactor_instance: Optional[RedactorInterface] = None
 _router_instance: Optional[LLMRouterInterface] = None
 _chat_service_instance: Optional[ChatService] = None
-
-
-def _h(value: str) -> str:
-    return hashlib.sha256(str(value).encode()).hexdigest()[:12]
-
 
 def _build_restored_user_message(content: str, attachment_name: Optional[str]) -> str:
     text = str(content or "")
@@ -306,11 +301,12 @@ async def debug_test_anthropic(
         }
     except Exception as exc:
         logger.error(
-            "debug.test_anthropic_failed | model=%s | resolved=%s | exc=%r",
+            "debug.test_anthropic_failed | user=%s | model=%s | resolved=%s | error=%s | trace=%s",
+            _h(current_user.username),
             configured_model,
             resolved_model,
-            exc,
-            exc_info=True,
+            str(exc),
+            traceback.format_exc(),
         )
         return {
             "ok": False,
@@ -319,8 +315,8 @@ async def debug_test_anthropic(
             "resolved_model": resolved_model,
             "api_key_masked": mask_secret(settings.ANTHROPIC_API_KEY),
             "error_type": type(exc).__name__,
-            "error": str(exc),
-            "error_repr": repr(exc),
+            "error": "Erreur lors du traitement de la requête",
+            "error_repr": type(exc).__name__,
         }
 
 
