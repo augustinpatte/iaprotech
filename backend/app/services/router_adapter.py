@@ -105,12 +105,10 @@ class LiteLLMRouterAdapter(LLMRouterInterface):
         except Exception as exc:
             message, code = normalize_llm_exception(exc, provider, model)
             logger.error(
-                "router.call ERREUR | provider=%s | model=%s | %s | raw=%s",
+                "router.call ERREUR | provider=%s | model=%s | %s",
                 provider or "litellm",
                 model,
                 type(exc).__name__,
-                raw if (raw := str(exc)) else type(exc).__name__,
-                exc_info=True,
             )
             return err(message, code)
 
@@ -148,11 +146,9 @@ class LiteLLMRouterAdapter(LLMRouterInterface):
         except Exception as exc:
             message, _ = normalize_llm_exception(exc, provider, model)
             logger.error(
-                "router.stream ERREUR | provider=%s | model=%s | %s | raw=%s",
+                "router.stream ERREUR | provider=%s | model=%s | %s",
                 provider or "litellm",
                 model,
                 type(exc).__name__,
-                str(exc),
-                exc_info=True,
             )
             raise RuntimeError(message) from exc

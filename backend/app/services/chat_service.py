@@ -14,7 +14,6 @@ import asyncio
 import json
 import re
 import time
-import traceback
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator, Dict, List, Optional
@@ -35,7 +34,7 @@ from app.core.router import (
     select_model,
 )
 from app.core.usage_tracker import get_monthly_usage, track_usage
-from app.utils.logger import get_logger
+from app.utils.logger import _h, get_logger
 
 logger = get_logger(__name__)
 
@@ -456,11 +455,10 @@ class ChatService:
                     model_used or model or "",
                 )
                 logger.error(
-                    "chat_service.stream ERREUR | project=%s | user=%s | %s | trace=%s",
-                    project_id or "",
-                    user_id,
+                    "chat_service.stream ERREUR | project=%s | user=%s | %s",
+                    _h(project_id) if project_id else "",
+                    _h(user_id) if user_id else "unknown",
                     type(exc).__name__,
-                    traceback.format_exc(),
                 )
                 yield _sse({"type": "error", "content": message, "code": code})
                 await _log_stream_event(False, code)

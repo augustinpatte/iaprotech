@@ -42,7 +42,6 @@ from __future__ import annotations
 import json
 import re
 import time
-import traceback
 from typing import AsyncGenerator, List, Optional
 
 import anthropic
@@ -97,11 +96,10 @@ async def _call_anthropic(
         }
     except Exception as exc:
         logger.error(
-            "anthropic.call_error | model=%s | resolved_model=%s | exc=%r | trace=%s",
+            "anthropic.call_error | model=%s | resolved_model=%s | exc=%s",
             model,
             resolved_model,
-            exc,
-            traceback.format_exc(),
+            type(exc).__name__,
         )
         raise
 
@@ -123,11 +121,9 @@ async def _stream_anthropic(
                 yield text
     except Exception as exc:
         logger.error(
-            "anthropic.stream_error | model=%s | resolved_model=%s | exc=%r | trace=%s",
+            "anthropic.stream_error | model=%s | exc=%s",
             model,
-            resolved_model,
-            exc,
-            traceback.format_exc(),
+            type(exc).__name__,
         )
         raise
 
