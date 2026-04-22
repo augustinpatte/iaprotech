@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.config import settings
 
@@ -156,7 +156,7 @@ class CreateOrgRequest(BaseModel):
 
 
 class InviteRequest(BaseModel):
-    email: str = Field(..., max_length=256)
+    email: EmailStr
     role: Literal["admin", "member"] = "member"
 
 

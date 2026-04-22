@@ -15,7 +15,7 @@ import re
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.api.routes.auth import TokenData, get_current_user
 from app.core.project_manager import ProjectManager
@@ -198,7 +198,7 @@ async def archive_project(
 # ---------------------------------------------------------------------------
 
 class RenameRequest(BaseModel):
-    name: str
+    name: str = Field(..., min_length=1, max_length=200, strip_whitespace=True)
 
 
 @router.patch(

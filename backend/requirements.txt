@@ -19,6 +19,7 @@ defusedxml>=0.7.1
 langdetect>=1.0.9
 pydantic>=2.6.0
 pydantic-settings>=2.1.0
+email-validator>=2.1.0
 slowapi>=0.1.9
 python-dotenv>=1.0.0
 aiofiles>=23.2.1

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr, Field
 
 from app.api.routes.auth import (
     TokenData,
@@ -28,7 +28,7 @@ from app.middleware.rate_limit import limiter
 from app.utils.logger import get_logger, hash_id as _h
 
 class DeleteMyAccountRequest(BaseModel):
-    password: str
+    password: str = Field(..., max_length=128)
     confirm: str
 
 
@@ -58,14 +58,14 @@ class UserProfileResponse(BaseModel):
 
 
 class UpdateMeRequest(BaseModel):
-    email: Optional[str] = None
+    email: Optional[EmailStr] = None
     provider_api_keys: Optional[dict[str, str]] = None
 
 
 class ChangePasswordRequest(BaseModel):
-    current_password: str
-    new_password: str
-    confirm_password: str
+    current_password: str = Field(..., max_length=128)
+    new_password: str = Field(..., max_length=128)
+    confirm_password: str = Field(..., max_length=128)
 
 
 async def _scan_keys(redis, pattern: str, count: int = 100) -> list[str]:
@@ -208,11 +208,6 @@ async def update_me(
 
     if body.email is not None:
         email = (body.email or "").strip()
-        if not email or "@" not in email or "." not in email.split("@")[-1]:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Adresse email invalide.",
-            )
         user["email"] = email
 
     if body.provider_api_keys is not None:
