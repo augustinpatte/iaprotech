@@ -15,6 +15,7 @@ PyMuPDF>=1.23.26
 python-docx>=1.1.0
 python-pptx>=0.6.23
 beautifulsoup4>=4.12.0
+defusedxml>=0.7.1
 langdetect>=1.0.9
 pydantic>=2.6.0
 pydantic-settings>=2.1.0

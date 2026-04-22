@@ -35,7 +35,7 @@ import asyncio
 import io
 import os
 import re as _re
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Callable, Dict, List, Optional, TypedDict
