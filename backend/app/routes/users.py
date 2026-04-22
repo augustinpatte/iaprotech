@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -470,7 +471,8 @@ async def export_my_data(
         },
     }
 
-    filename = f"{username}_privacy_proxy_export.json"
+    safe_username = re.sub(r'[^a-zA-Z0-9_\-.]', '_', username)
+    filename = f"{safe_username}_privacy_proxy_export.json"
     return Response(
         content=json.dumps(export_payload, ensure_ascii=False, indent=2),
         media_type="application/json",

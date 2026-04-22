@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.core.result import Result, ok, err
@@ -377,7 +377,7 @@ class RegisterResponse(BaseModel):
 
 
 class RegisterRequest(BaseModel):
-    username: str
+    username: str = Field(..., pattern=r"^[a-zA-Z0-9_\-.]{3,64}$")
     password: str
     email: Optional[str] = None
     invite_token: Optional[str] = None
@@ -385,7 +385,7 @@ class RegisterRequest(BaseModel):
 
 
 class BootstrapRequest(BaseModel):
-    username: str
+    username: str = Field(..., pattern=r"^[a-zA-Z0-9_\-.]{3,64}$")
     password: str
 
 
