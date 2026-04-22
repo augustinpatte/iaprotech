@@ -2,7 +2,7 @@
 LLM Router — sélection intelligente de modèle multi-provider via LiteLLM.
 
 Pipeline :
-  1. analyze_request()  — appelle claude-haiku pour qualifier la requête
+  1. analyze_request()  — heuristique locale pour qualifier la requête
                           (complexité, type de tâche, tokens estimés)
   2. select_model()     — filtre MODEL_REGISTRY et retourne le modèle
                           optimal (qualité suffisante, moins cher, provider dispo)
@@ -18,13 +18,15 @@ Activation : ROUTER_ENABLED=true dans .env
 RGPD :
   Les logs ne contiennent jamais le texte analysé — uniquement des métriques
   (complexité, task_type, model_id, coût estimé).
+
+SECURITY NOTE: analyze_request() is local-only — it MUST NOT make
+any external call. Any complexity analysis before pseudonymization
+is a privacy violation.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
-import re
 from typing import Any, AsyncGenerator, Dict, List, Literal, Optional, Sequence
 
 import litellm
@@ -207,28 +209,6 @@ _QUALITY_THRESHOLD: Dict[str, int] = {
 
 # Contexte minimal requis pour les requêtes longues (tokens)
 _LONG_CONTEXT_MIN: int = 100_000
-
-# Prompt d'analyse de complexité (en anglais pour fiabilité du JSON)
-_ANALYSIS_PROMPT = """\
-Analyze this text and respond with ONLY a JSON object — no explanation, no markdown.
-
-JSON schema:
-{
-  "complexity": "simple" | "medium" | "complex",
-  "task_type":  "code" | "legal" | "summary" | "multilingual" | "math" | "creative" | "simple",
-  "estimated_tokens": <integer — expected response length in tokens>,
-  "requires_long_context": true | false
-}
-
-Definitions:
-- simple:  greetings, basic questions, short direct answers needed
-- medium:  explanations, structured analysis, document summaries
-- complex: multi-step reasoning, expert depth, code review, legal analysis
-- requires_long_context: true if input > 2000 tokens or needs >4000 tokens response
-
-Text to analyze (truncated to 800 chars):
-{text}"""
-
 
 # ---------------------------------------------------------------------------
 # Pydantic models
@@ -491,19 +471,73 @@ async def analyze_request(
     attachment_types: Optional[List[str]] = None,
 ) -> RequestProfile:
     """
-    Analyse locale de la complexité et du type de tâche — aucun appel réseau.
-    Heuristique : longueur du texte + détection de mots-clés par domaine.
-    Retour immédiat (<1 ms), zéro latence ajoutée au pipeline.
+    Heuristique locale — analyse de complexité du prompt SANS appel LLM.
+
+    RGPD: cette fonction NE doit PAS envoyer de données à un tiers.
+    Elle opère uniquement sur la longueur, le vocabulaire et les
+    métadonnées du prompt.
+
+    Le paramètre `language` est conservé pour compatibilité d'interface.
     """
-    profile = _default_profile(text)
     normalized_attachments = _normalize_attachment_types(attachment_types)
-    if normalized_attachments:
-        profile.attachment_types = normalized_attachments
-        profile.complexity = "medium" if profile.complexity == "simple" else profile.complexity
-        if set(normalized_attachments) & (_PDF_EXTS | _SPREADSHEET_EXTS | _PRESENTATION_EXTS):
-            profile.requires_long_context = True
-            profile.estimated_tokens = max(profile.estimated_tokens, 1200)
-    return profile
+    user_text = (text or "").strip()
+    word_count = len(user_text.split())
+    char_count = len(user_text)
+    estimated_tokens = max(1, char_count // 4)
+
+    complex_keywords = {
+        "analyse", "analyser", "compare", "comparer", "synthese",
+        "synthetise", "resume", "resumer", "redige", "rediger",
+        "explique", "expliquer", "demontre", "demontrer", "justifie",
+        "justifier", "evalue", "evaluer", "audit", "auditer",
+        "memo", "memoire", "conclusion", "plaidoirie", "contrat",
+        "jurisprudence", "bilan", "liasse", "tva", "declaration",
+    }
+    text_lower = user_text.lower()
+    keyword_hits = sum(1 for kw in complex_keywords if kw in text_lower)
+    question_count = user_text.count("?")
+
+    has_attachment = len(normalized_attachments) > 0
+    heavy_attachment = any(
+        attachment_type in {"pdf", "docx", "xlsx", "pptx"}
+        for attachment_type in normalized_attachments
+    )
+
+    is_complex = (
+        word_count > 80
+        or question_count >= 3
+        or keyword_hits >= 2
+        or heavy_attachment
+    )
+
+    needs_long_context = (
+        word_count > 300
+        or estimated_tokens > 1500
+        or heavy_attachment
+    )
+
+    task_type = "simple"
+    for task_name, keywords in _TASK_KEYWORDS.items():
+        if any(keyword in text_lower for keyword in keywords):
+            task_type = task_name
+            break
+
+    complexity: Literal["simple", "medium", "complex"] = "complex" if is_complex else "simple"
+    if complexity == "simple" and (
+        word_count > 20
+        or question_count >= 1
+        or keyword_hits >= 1
+        or has_attachment
+    ):
+        complexity = "medium"
+
+    return RequestProfile(
+        complexity=complexity,
+        task_type=task_type,
+        estimated_tokens=estimated_tokens,
+        requires_long_context=needs_long_context,
+        attachment_types=normalized_attachments,
+    )
 
 
 async def select_model(
