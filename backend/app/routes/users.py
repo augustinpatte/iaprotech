@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -16,14 +17,17 @@ from app.api.routes.auth import (
     pwd_context,
 )
 from app.config import settings
+from app.core.audit_trail import get_audit_trail
 from app.core.policy_engine import get_plan_limits
 from app.core.project_manager import ProjectManager, VaultDeletionError
 from app.core.org_manager import get_org_manager
 from app.core.usage_tracker import get_monthly_usage
 from app.middleware.rate_limit import limiter
+from app.utils.logger import get_logger, hash_id as _h
 
 router = APIRouter()
 _pm = ProjectManager()
+logger = get_logger(__name__)
 
 
 class UserProfileResponse(BaseModel):
@@ -65,6 +69,79 @@ def _provider_api_keys_status(user: dict | None) -> dict[str, bool]:
         "google": bool(str(provider_api_keys.get("google", "") or "").strip()),
         "mistral": bool(str(provider_api_keys.get("mistral", "") or "").strip()),
     }
+
+
+async def _collect_user_usage(user_id: str) -> dict:
+    """Collecte les agregats d'usage des 12 derniers mois. Jamais d'exception."""
+    try:
+        now = datetime.now(timezone.utc)
+        months = []
+        year, month = now.year, now.month
+        for _ in range(12):
+            months.append(f"{year:04d}-{month:02d}")
+            month -= 1
+            if month == 0:
+                month, year = 12, year - 1
+
+        aggregates = []
+        total_tokens = 0
+        total_cost = 0.0
+        for ym in months:
+            usage = await get_monthly_usage(user_id, ym)
+            if hasattr(usage, "model_dump"):
+                data = usage.model_dump()
+            elif hasattr(usage, "dict"):
+                data = usage.dict()
+            else:
+                data = dict(usage)
+            data["month"] = ym
+            aggregates.append(data)
+            total_tokens += int(data.get("total_tokens", 0) or 0)
+            total_cost += float(data.get("total_cost_usd", 0.0) or 0.0)
+
+        return {
+            "monthly_aggregates": aggregates,
+            "total_tokens_used": total_tokens,
+            "total_cost_usd": round(total_cost, 6),
+        }
+    except Exception as exc:
+        logger.warning(
+            "export.usage_unavailable | user=%s | %s",
+            _h(user_id),
+            type(exc).__name__,
+        )
+        return {
+            "monthly_aggregates": [],
+            "total_tokens_used": 0,
+            "total_cost_usd": 0.0,
+            "export_error": "unavailable",
+        }
+
+
+async def _collect_user_audit(user_id: str, limit: int = 1000) -> list:
+    """Collecte les entrees d'audit du user. Jamais d'exception."""
+    try:
+        entries = await get_audit_trail().get_events(
+            org_id=None,
+            user_id=user_id,
+            limit=limit,
+        )
+        normalized_entries = []
+        for entry in entries or []:
+            if hasattr(entry, "model_dump"):
+                normalized_entries.append(entry.model_dump())
+            elif hasattr(entry, "__dict__"):
+                normalized_entries.append(dict(entry.__dict__))
+            else:
+                normalized_entries.append(dict(entry))
+        return normalized_entries
+    except Exception as exc:
+        logger.warning(
+            "export.audit_unavailable | user=%s | %s",
+            _h(user_id),
+            type(exc).__name__,
+        )
+        return []
 
 
 @router.get("/users/me", response_model=UserProfileResponse)
@@ -185,13 +262,14 @@ async def export_my_data(
     request: Request,
     current_user: TokenData = Depends(get_current_user),
 ):
-    user = await _get_user(current_user.username)
+    username = current_user.username
+    user = await _get_user(username)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Utilisateur introuvable.")
 
     projects = []
-    for summary in await _pm.list_projects(current_user.username):
-        project = await _pm.get_project(summary.project_id, current_user.username)
+    for summary in await _pm.list_projects(username):
+        project = await _pm.get_project(summary.project_id, username)
         if not project:
             continue
         payload = project.model_dump()
@@ -212,9 +290,11 @@ async def export_my_data(
         if org:
             org_name = org.name
 
+    usage_data = await _collect_user_usage(username)
+    audit_data = await _collect_user_audit(username)
     export_payload = {
         "user": {
-            "username": current_user.username,
+            "username": username,
             "email": user.get("email", ""),
             "role": user.get("role", current_user.role or "member"),
             "org_id": org_id,
@@ -223,9 +303,22 @@ async def export_my_data(
         },
         "retention_days": settings.PROJECT_TTL_DAYS,
         "projects": projects,
+        "usage": usage_data,
+        "audit_trail": audit_data,
+        "rgpd_export_metadata": {
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "article_20_rgpd": True,
+            "retention_policy": {
+                "vault_ttl_hours": 1,
+                "project_archive_after_days": 30,
+                "usage_records_ttl_days": 90,
+                "usage_aggregates_ttl_days": 365,
+                "audit_trail_ttl_days": 730,
+            },
+        },
     }
 
-    filename = f"{current_user.username}_privacy_proxy_export.json"
+    filename = f"{username}_privacy_proxy_export.json"
     return Response(
         content=json.dumps(export_payload, ensure_ascii=False, indent=2),
         media_type="application/json",
