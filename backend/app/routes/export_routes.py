@@ -297,10 +297,10 @@ def _parse_exported_conversation_text(text: str, fallback_name: str) -> tuple[st
 def _parse_imported_json(content: bytes, fallback_name: str) -> tuple[str, list[dict[str, str]]]:
     try:
         payload = json.loads(content.decode("utf-8"))
-    except Exception as exc:
+    except (RecursionError, json.JSONDecodeError) as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="JSON d'import invalide ou corrompu.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Fichier JSON invalide ou trop imbriqué",
         ) from exc
 
     if not isinstance(payload, dict) or not isinstance(payload.get("messages"), list):
