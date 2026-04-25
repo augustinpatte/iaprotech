@@ -23,6 +23,17 @@ from app.utils.logger import get_logger, hash_id
 
 logger = get_logger(__name__)
 
+JWT_ISSUER = "privacy-proxy"
+JWT_AUDIENCE = "api"
+JWT_REQUIRED_CLAIMS = ["exp", "sub", "jti", "iat"]
+JWT_DECODE_OPTIONS = {
+    "require": JWT_REQUIRED_CLAIMS,
+    "require_exp": True,
+    "require_sub": True,
+    "require_jti": True,
+    "require_iat": True,
+}
+
 PUBLIC_PATHS = frozenset({
     "/health",
     "/docs",
@@ -76,11 +87,22 @@ class SecurityMiddleware(BaseHTTPMiddleware):
         # 2. Decodage JWT
         try:
             from jose import ExpiredSignatureError, JWTError, jwt  # noqa: PLC0415
+            from jose.exceptions import JWTClaimsError  # noqa: PLC0415
             payload: dict = jwt.decode(
                 token,
                 settings.SECRET_KEY,
                 algorithms=[settings.ALGORITHM],
+                audience=JWT_AUDIENCE,
+                issuer=JWT_ISSUER,
+                options=JWT_DECODE_OPTIONS,
             )
+        except JWTClaimsError as exc:
+            message = str(exc).lower()
+            if "audience" in message:
+                logger.warning("jwt.invalid_claim | claim=%s", "aud")
+            elif "issuer" in message:
+                logger.warning("jwt.invalid_claim | claim=%s", "iss")
+            return _unauthorized("Token JWT invalide.")
         except Exception as exc:
             from jose import ExpiredSignatureError  # noqa: PLC0415
             if isinstance(exc, ExpiredSignatureError):
@@ -94,23 +116,22 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             return _unauthorized("Claim 'sub' manquant dans le JWT.")
 
         # 3. JTI blacklist
-        jti = payload.get("jti")
-        if jti:
-            try:
-                from app.api.routes.auth import _get_redis  # noqa: PLC0415
-                r = await _get_redis()
-                if r and await r.exists(f"jti_bl:{jti}"):
-                    logger.info("security.token_revoked | user=%s", hash_id(user_id))
-                    return _unauthorized("Token revoque.")
-            except Exception as exc:
-                logger.warning(
-                    "security.jti_check_failed | %s | fail-closed: refusing request",
-                    type(exc).__name__,
-                )
-                return _unauthorized(
-                    "Verification de securite temporairement indisponible. "
-                    "Reconnectez-vous."
-                )
+        jti = payload["jti"]
+        try:
+            from app.api.routes.auth import _get_redis  # noqa: PLC0415
+            r = await _get_redis()
+            if r and await r.exists(f"jti_bl:{jti}"):
+                logger.info("security.token_revoked | user=%s", hash_id(user_id))
+                return _unauthorized("Token revoque.")
+        except Exception as exc:
+            logger.warning(
+                "security.jti_check_failed | %s | fail-closed: refusing request",
+                type(exc).__name__,
+            )
+            return _unauthorized(
+                "Verification de securite temporairement indisponible. "
+                "Reconnectez-vous."
+            )
 
         # 3b. Suspension membre : verifie si l'utilisateur a ete retire de son org.
         # La cle suspended:{user_id} est ecrite par OrgManager.remove_member() avec

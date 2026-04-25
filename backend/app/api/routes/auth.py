@@ -22,6 +22,7 @@ import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
+from jose.exceptions import JWTClaimsError
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field
 
@@ -35,6 +36,16 @@ logger = get_logger(__name__)
 
 USER_STATUS_VALUES = frozenset({"pending", "active", "suspended"})
 PROVIDER_API_KEY_NAMES = ("openai", "anthropic", "google", "mistral")
+JWT_ISSUER = "privacy-proxy"
+JWT_AUDIENCE = "api"
+JWT_REQUIRED_CLAIMS = ["exp", "sub", "jti", "iat"]
+JWT_DECODE_OPTIONS = {
+    "require": JWT_REQUIRED_CLAIMS,
+    "require_exp": True,
+    "require_sub": True,
+    "require_jti": True,
+    "require_iat": True,
+}
 
 
 router = APIRouter()
@@ -463,10 +474,16 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + (
+    now = datetime.now(timezone.utc)
+    expire = now + (
         expires_delta or timedelta(minutes=settings.TOKEN_EXPIRE_MINUTES)
     )
-    to_encode.update({"exp": expire})
+    to_encode.update({
+        "exp": expire,
+        "iss": JWT_ISSUER,
+        "aud": JWT_AUDIENCE,
+        "iat": int(now.timestamp()),
+    })
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
@@ -488,33 +505,46 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> TokenData:
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    # --- etape 1 : decode JWT (signature + expiration seulement) ---
+    # --- etape 1 : decode JWT (signature + claims obligatoires) ---
     try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        payload = jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=[settings.ALGORITHM],
+            audience=JWT_AUDIENCE,
+            issuer=JWT_ISSUER,
+            options=JWT_DECODE_OPTIONS,
+        )
         username: str = payload.get("sub", "")
         if not username:
             raise auth_exc
+    except JWTClaimsError as exc:
+        message = str(exc).lower()
+        if "audience" in message:
+            logger.warning("jwt.invalid_claim | claim=%s", "aud")
+        elif "issuer" in message:
+            logger.warning("jwt.invalid_claim | claim=%s", "iss")
+        raise auth_exc
     except JWTError:
         raise auth_exc
 
-    jti: str = payload.get("jti", "")
+    jti: str = payload["jti"]
 
     # --- etape 2 : JTI blacklist (token revoque via /logout) ---
-    if jti:
-        try:
-            r = await _get_redis()
-            if r and await r.exists(f"jti_bl:{jti}"):
-                logger.info("get_current_user: token revoque | user=%s", _h(username))
-                raise auth_exc
-        except HTTPException:
-            raise
-        except Exception as exc:
-            # Redis down : on ne peut pas verifier -> on refuse par defaut (fail-closed)
-            logger.warning(
-                "get_current_user: jti_check indisponible | %s — refuse par defaut",
-                type(exc).__name__,
-            )
+    try:
+        r = await _get_redis()
+        if r and await r.exists(f"jti_bl:{jti}"):
+            logger.info("get_current_user: token revoque | user=%s", _h(username))
             raise auth_exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Redis down : on ne peut pas verifier -> on refuse par defaut (fail-closed)
+        logger.warning(
+            "get_current_user: jti_check indisponible | %s — refuse par defaut",
+            type(exc).__name__,
+        )
+        raise auth_exc
 
     # --- etape 3 : rechargement depuis Redis (source de verite) ---
     user_data = await _get_user(username)
@@ -725,7 +755,14 @@ async def logout(
 ):
     """Revoque le token courant (JTI ajoutee a la blacklist Redis, TTL residuel)."""
     try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        payload = jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=[settings.ALGORITHM],
+            audience=JWT_AUDIENCE,
+            issuer=JWT_ISSUER,
+            options=JWT_DECODE_OPTIONS,
+        )
         jti = payload.get("jti")
         exp = payload.get("exp")
         if jti and exp:
@@ -734,6 +771,17 @@ async def logout(
             if r:
                 await r.setex(f"jti_bl:{jti}", remaining, "1")
                 await _untrack_active_jti(current_user.username, jti)
+    except JWTClaimsError as exc:
+        message = str(exc).lower()
+        if "audience" in message:
+            logger.warning("jwt.invalid_claim | claim=%s", "aud")
+        elif "issuer" in message:
+            logger.warning("jwt.invalid_claim | claim=%s", "iss")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     except Exception as exc:
         logger.warning("auth.logout: erreur revocation | %s", type(exc).__name__)
     logger.info("auth.logout | user=%s", _h(current_user.username))
