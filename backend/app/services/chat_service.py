@@ -22,6 +22,7 @@ from typing import AsyncGenerator, Dict, List, Optional
 from fastapi import HTTPException, status
 
 from app.config import settings
+from app.api.routes.auth import get_user_provider_api_keys
 from app.core.audit_trail import AuditEvent, get_audit_trail
 from app.core.interfaces import LLMRouterInterface, RedactorInterface, VaultInterface
 from app.core.policy_engine import ProtectionMode, get_effective_policy
@@ -173,12 +174,14 @@ class ChatService:
             )
             return err("Vault temporairement indisponible", "VAULT_UNAVAILABLE")
 
+        provider_api_keys = await get_user_provider_api_keys(user_id)
         call_result = await self.router.call(
             sanitised,
             model,
             max_tokens=max_tokens,
             system=system,
             provider=provider,
+            provider_api_keys=provider_api_keys,
         )
         if not call_result.ok:
             return call_result
@@ -238,12 +241,14 @@ class ChatService:
                 yield _sse({"type": "status", "step": "preparing"})
 
                 async with asyncio.timeout(60):
+                    provider_api_keys = await get_user_provider_api_keys(user_id)
                     provider_name, model_display, model_used, selection = await self._resolve_model(
                         messages=messages,
                         provider=provider,
                         model=model,
                         preferred_model=preferred_model,
                         attachment_types=attachment_types,
+                        provider_api_keys=provider_api_keys,
                     )
                     yield _sse({"type": "status", "step": "policy"})
                     org_settings = await self._check_org_policies(
@@ -371,6 +376,7 @@ class ChatService:
                         max_tokens=max_tokens,
                         system=system,
                         provider=None if selection else provider_name,
+                        provider_api_keys=provider_api_keys,
                     ):
                         raw_llm_parts.append(chunk)
                         now = time.monotonic()
@@ -482,6 +488,7 @@ class ChatService:
         model: Optional[str],
         preferred_model: Optional[str],
         attachment_types: Optional[List[str]] = None,
+        provider_api_keys: Optional[Dict[str, str]] = None,
     ) -> tuple[str, str, str, Optional[ModelSelection]]:
         if not settings.ROUTER_ENABLED:
             provider_name = (provider or settings.LLM_PROVIDER).lower()
@@ -495,7 +502,11 @@ class ChatService:
 
         try:
             if preferred_model:
-                selection = await select_model(None, user_preference=preferred_model)
+                selection = await select_model(
+                    None,
+                    user_preference=preferred_model,
+                    provider_api_keys=provider_api_keys,
+                )
             else:
                 last_user_text = next(
                     (message.get("content", "") for message in reversed(messages) if message.get("role") == "user"),
@@ -505,7 +516,10 @@ class ChatService:
                     last_user_text,
                     attachment_types=attachment_types,
                 )
-                selection = await select_model(profile)
+                selection = await select_model(
+                    profile,
+                    provider_api_keys=provider_api_keys,
+                )
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

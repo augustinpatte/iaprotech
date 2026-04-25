@@ -71,6 +71,7 @@ class LLMRouterInterface(ABC):
         max_tokens: int = 2048,
         system: Optional[str] = None,
         provider: Optional[str] = None,
+        provider_api_keys: Optional[Dict[str, str]] = None,
     ) -> Result:
         """Appel LLM non-streaming. Ok(response_text) | Err(...)."""
         ...
@@ -83,6 +84,7 @@ class LLMRouterInterface(ABC):
         max_tokens: int = 2048,
         system: Optional[str] = None,
         provider: Optional[str] = None,
+        provider_api_keys: Optional[Dict[str, str]] = None,
     ) -> AsyncGenerator[str, None]:
         """Appel LLM streaming. Yields text chunks bruts."""
         ...

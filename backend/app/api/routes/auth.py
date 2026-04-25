@@ -12,6 +12,7 @@ Security invariants:
 """
 
 import json
+import base64
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
@@ -25,24 +26,21 @@ from passlib.context import CryptContext
 from pydantic import BaseModel, Field
 
 from app.config import settings
+from app.core.vault import decrypt_data, encrypt_data
 from app.core.result import Result, ok, err
 from app.middleware.rate_limit import limiter
-from app.utils.logger import get_logger
-import hashlib
+from app.utils.logger import get_logger, hash_id as _h
 
 logger = get_logger(__name__)
 
 USER_STATUS_VALUES = frozenset({"pending", "active", "suspended"})
-
-
-def _h(v: str) -> str:
-    """Hash un identifiant pour les logs (RGPD — jamais de PII en clair)."""
-    return hashlib.sha256(str(v).encode()).hexdigest()[:12]
+PROVIDER_API_KEY_NAMES = ("openai", "anthropic", "google", "mistral")
 
 
 router = APIRouter()
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+_DUMMY_BCRYPT_HASH = pwd_context.hash("dummy_password_for_timing_protection_only")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/token")
 
 # ---------------------------------------------------------------------------
@@ -79,6 +77,7 @@ async def _get_user(username: str) -> Optional[dict]:
     if raw is None:
         return None
     data = json.loads(raw)
+    data = await _migrate_legacy_provider_keys(username, data)
     return _normalize_user_record(username, data)
 
 
@@ -94,14 +93,65 @@ async def _set_user(username: str, data: dict) -> None:
     await pipe.execute()
 
 
-def _normalize_provider_api_keys(data: Optional[dict]) -> dict:
+def _normalize_provider_api_keys_plain(data: Optional[dict]) -> dict:
     raw = dict(data or {})
     return {
-        "openai": str(raw.get("openai", "") or "").strip(),
-        "anthropic": str(raw.get("anthropic", "") or "").strip(),
-        "google": str(raw.get("google", "") or "").strip(),
-        "mistral": str(raw.get("mistral", "") or "").strip(),
+        provider: str(raw.get(provider, "") or "").strip()
+        for provider in PROVIDER_API_KEY_NAMES
     }
+
+
+def _normalize_provider_api_keys(data: Optional[dict]) -> str:
+    keys = _normalize_provider_api_keys_plain(data)
+    plaintext = json.dumps(keys, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    blob = encrypt_data(plaintext, settings.VAULT_ENCRYPTION_KEY)
+    return base64.b64encode(blob).decode("ascii")
+
+
+def decrypt_provider_api_keys(
+    encrypted: Optional[str],
+    user_id: str = "",
+    *,
+    strict: bool = False,
+) -> dict:
+    if not encrypted:
+        return _normalize_provider_api_keys_plain(None)
+    try:
+        blob = base64.b64decode(str(encrypted).encode("ascii"), validate=True)
+        plaintext = decrypt_data(blob, settings.VAULT_ENCRYPTION_KEY)
+        data = json.loads(plaintext.decode("utf-8"))
+        return _normalize_provider_api_keys_plain(data)
+    except Exception as exc:
+        logger.warning(
+            "auth.provider_api_keys_decrypt_failed | user=%s | %s",
+            _h(user_id) if user_id else "unknown",
+            type(exc).__name__,
+        )
+        if strict:
+            raise
+        return _normalize_provider_api_keys_plain(None)
+
+
+async def get_user_provider_api_keys(username: str) -> dict:
+    user = await _get_user(username)
+    if not user:
+        return _normalize_provider_api_keys_plain(None)
+    return decrypt_provider_api_keys(user.get("provider_api_keys_encrypted"), username)
+
+
+async def _migrate_legacy_provider_keys(username: str, user_record: dict) -> dict:
+    if not isinstance(user_record.get("provider_api_keys"), dict):
+        return user_record
+    migrated = dict(user_record)
+    migrated["provider_api_keys_encrypted"] = _normalize_provider_api_keys(
+        migrated.get("provider_api_keys")
+    )
+    migrated.pop("provider_api_keys", None)
+    r = await _get_redis()
+    if r is not None:
+        await r.set(f"user:{username}", json.dumps(migrated))
+        logger.info("auth.provider_api_keys_migrated | user=%s", _h(username))
+    return migrated
 
 
 def _normalize_user_record(username: str, data: Optional[dict]) -> dict:
@@ -110,6 +160,9 @@ def _normalize_user_record(username: str, data: Optional[dict]) -> dict:
     status_value = str(raw.get("status", derived_status) or derived_status).strip().lower()
     if status_value not in USER_STATUS_VALUES:
         status_value = derived_status
+    provider_api_keys_encrypted = str(raw.get("provider_api_keys_encrypted") or "").strip()
+    if not provider_api_keys_encrypted:
+        provider_api_keys_encrypted = _normalize_provider_api_keys(raw.get("provider_api_keys"))
 
     return {
         "username": username,
@@ -125,7 +178,7 @@ def _normalize_user_record(username: str, data: Optional[dict]) -> dict:
         "activated_at": raw.get("activated_at"),
         "last_login": raw.get("last_login"),
         "is_active": status_value == "active",
-        "provider_api_keys": _normalize_provider_api_keys(raw.get("provider_api_keys")),
+        "provider_api_keys_encrypted": provider_api_keys_encrypted,
     }
 
 
@@ -283,6 +336,13 @@ _LOGIN_LOCKOUT_THRESHOLD = 5    # echecs consecutifs avant lockout username
 _LOGIN_LOCKOUT_DURATION  = 900  # 15 minutes en secondes
 
 
+def _lockout_exception(ttl: int) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail=f"Compte bloque. Reessayez dans {max(1, ttl // 60)} minute(s).",
+    )
+
+
 async def _check_login_rate_limit(request: Request, username: str) -> None:
     """
     Leve HTTP 429 si :
@@ -316,17 +376,14 @@ async def _check_login_rate_limit(request: Request, username: str) -> None:
             "auth.ratelimit: lockout actif | user=%s | ttl=%ds",
             _h(username), ttl,
         )
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Compte bloque. Reessayez dans {max(1, ttl // 60)} minute(s).",
-        )
+        raise _lockout_exception(ttl)
 
 
-async def _on_login_failure(username: str) -> None:
+async def _on_login_failure(username: str) -> bool:
     """Incremente le compteur d'echecs; lockout username apres seuil."""
     r = await _get_redis()
     if r is None:
-        return
+        return False
     fail_key = f"login:fail:{username}"
     count = await r.incr(fail_key)
     await r.expire(fail_key, _LOGIN_LOCKOUT_DURATION)
@@ -336,6 +393,8 @@ async def _on_login_failure(username: str) -> None:
         logger.warning(
             "auth: lockout apres %d echecs | user=%s", count, _h(username)
         )
+        return True
+    return False
 
 
 async def _on_login_success(username: str) -> None:
@@ -601,9 +660,16 @@ async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends
     await _check_login_rate_limit(request, form_data.username)
 
     user = await _get_user(form_data.username)
-    if not user or not verify_password(form_data.password, user["hashed_password"]):
+    password_ok = False
+    if user:
+        password_ok = verify_password(form_data.password, user["hashed_password"])
+    else:
+        pwd_context.verify(form_data.password, _DUMMY_BCRYPT_HASH)
+    if not user or not password_ok:
         logger.warning("auth.login: echec | user=%s", _h(form_data.username))
-        await _on_login_failure(form_data.username)
+        locked = await _on_login_failure(form_data.username)
+        if locked:
+            raise _lockout_exception(_LOGIN_LOCKOUT_DURATION)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Identifiants incorrects.",

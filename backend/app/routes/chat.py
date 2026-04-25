@@ -16,7 +16,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
-from app.api.routes.auth import TokenData, get_current_user
+from app.api.routes.auth import TokenData, get_current_user, get_user_provider_api_keys
 from app.api.schemas.chat import ChatRequest, ChatResponse, ChatStreamRequest
 from app.config import settings
 from app.core.audit_trail import AuditEvent, get_audit_trail
@@ -119,7 +119,10 @@ async def _safe_audit_log(event: AuditEvent) -> None:
         logger.warning("chat.audit WARN | %s", type(exc).__name__)
 
 
-async def _resolve_model(payload: ChatRequest) -> tuple[str, str, Optional[object]]:
+async def _resolve_model(
+    payload: ChatRequest,
+    provider_api_keys: Optional[Dict[str, str]] = None,
+) -> tuple[str, str, Optional[object]]:
     from app.core.router import analyze_request, select_model  # noqa: PLC0415
 
     valid_providers = frozenset({"anthropic", "openai", "google", "mistral"})
@@ -135,7 +138,11 @@ async def _resolve_model(payload: ChatRequest) -> tuple[str, str, Optional[objec
 
     try:
         if payload.preferred_model:
-            selection = await select_model(None, user_preference=payload.preferred_model)
+            selection = await select_model(
+                None,
+                user_preference=payload.preferred_model,
+                provider_api_keys=provider_api_keys,
+            )
         else:
             last_user_text = next(
                 (message.content for message in reversed(payload.messages) if message.role == "user"),
@@ -145,7 +152,7 @@ async def _resolve_model(payload: ChatRequest) -> tuple[str, str, Optional[objec
                 last_user_text,
                 attachment_types=payload.attachment_types,
             )
-            selection = await select_model(profile)
+            selection = await select_model(profile, provider_api_keys=provider_api_keys)
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
@@ -258,12 +265,13 @@ async def list_models(
 ) -> Dict[str, Any]:
     from app.core.router import MODEL_REGISTRY, _provider_has_key  # noqa: PLC0415
 
+    provider_api_keys = await get_user_provider_api_keys(current_user.username)
     models_out = {}
     for model_id, meta in MODEL_REGISTRY.items():
         provider = meta["provider"]
         models_out[model_id] = {
             **{key: value for key, value in meta.items() if key != "litellm_model_id"},
-            "available": _provider_has_key(provider),
+            "available": _provider_has_key(provider, provider_api_keys),
         }
     return {
         "router_enabled": settings.ROUTER_ENABLED,
@@ -343,7 +351,8 @@ async def chat(
     total_entities = 0
 
     try:
-        provider, model_display, selection = await _resolve_model(payload)
+        provider_api_keys = await get_user_provider_api_keys(current_user.username)
+        provider, model_display, selection = await _resolve_model(payload, provider_api_keys)
         model_used = selection.litellm_model_id if selection else model_display
 
         project_manager = get_project_manager()
@@ -438,6 +447,7 @@ async def chat(
             max_tokens=payload.max_tokens,
             system=payload.system,
             provider=None if selection else provider,
+            provider_api_keys=provider_api_keys,
         )
         if not call_result.ok:
             raise HTTPException(

@@ -277,15 +277,35 @@ def _ensure_litellm_keys() -> None:
         os.environ["MISTRAL_API_KEY"] = settings.MISTRAL_API_KEY
 
 
-def _provider_has_key(provider: str) -> bool:
-    """Retourne True si la clé API pour ce provider est configurée et non-placeholder."""
+def _provider_key(provider: str, provider_api_keys: Optional[Dict[str, str]] = None) -> str:
+    user_key = str((provider_api_keys or {}).get(provider, "") or "").strip()
+    if _is_real_key(user_key):
+        return user_key
     keys: Dict[str, str] = {
         "anthropic": settings.ANTHROPIC_API_KEY,
         "openai":    settings.OPENAI_API_KEY,
         "google":    settings.GEMINI_API_KEY,
         "mistral":   settings.MISTRAL_API_KEY,
     }
-    return _is_real_key(keys.get(provider, ""))
+    return str(keys.get(provider, "") or "").strip()
+
+
+def _provider_from_litellm_model(litellm_model_id: str) -> str:
+    model = (litellm_model_id or "").lower()
+    if model.startswith("gemini/"):
+        return "google"
+    if model.startswith("mistral/"):
+        return "mistral"
+    if model.startswith("claude-"):
+        return "anthropic"
+    if model.startswith("gpt-") or model.startswith("o1"):
+        return "openai"
+    return ""
+
+
+def _provider_has_key(provider: str, provider_api_keys: Optional[Dict[str, str]] = None) -> bool:
+    """Retourne True si la clé API pour ce provider est configurée et non-placeholder."""
+    return _is_real_key(_provider_key(provider, provider_api_keys))
 
 
 _TASK_KEYWORDS: Dict[str, tuple] = {
@@ -543,6 +563,7 @@ async def analyze_request(
 async def select_model(
     profile: Optional[RequestProfile],
     user_preference: Optional[str] = None,
+    provider_api_keys: Optional[Dict[str, str]] = None,
 ) -> ModelSelection:
     """
     Sélectionne le modèle optimal selon le profil et la préférence utilisateur.
@@ -568,7 +589,7 @@ async def select_model(
                 f"Modèle inconnu : {user_preference!r}. "
                 f"Modèles disponibles : {sorted(MODEL_REGISTRY)}."
             )
-        if not _provider_has_key(MODEL_REGISTRY[user_preference]["provider"]):
+        if not _provider_has_key(MODEL_REGISTRY[user_preference]["provider"], provider_api_keys):
             raise ValueError(
                 f"Clé API absente pour le provider "
                 f"'{MODEL_REGISTRY[user_preference]['provider']}' "
@@ -586,14 +607,14 @@ async def select_model(
         preferred_models, reason = _preferred_models_for_attachments(attachment_types)
         for model_id in preferred_models:
             meta = MODEL_REGISTRY.get(model_id)
-            if meta and _provider_has_key(meta["provider"]):
+            if meta and _provider_has_key(meta["provider"], provider_api_keys):
                 return _make_selection(model_id, reason=reason)
 
     if not attachment_types:
         cheapest_candidates = [
             (mid, meta)
             for mid, meta in MODEL_REGISTRY.items()
-            if _provider_has_key(meta["provider"])
+            if _provider_has_key(meta["provider"], provider_api_keys)
             and (not profile.requires_long_context or meta["context_window"] >= _LONG_CONTEXT_MIN)
         ]
         if cheapest_candidates:
@@ -614,7 +635,7 @@ async def select_model(
             return False
         if profile.requires_long_context and meta["context_window"] < _LONG_CONTEXT_MIN:
             return False
-        if not _provider_has_key(meta["provider"]):
+        if not _provider_has_key(meta["provider"], provider_api_keys):
             return False
         return True
 
@@ -630,7 +651,7 @@ async def select_model(
             (mid, meta)
             for mid, meta in MODEL_REGISTRY.items()
             if meta["quality_score"] >= quality_min
-            and _provider_has_key(meta["provider"])
+            and _provider_has_key(meta["provider"], provider_api_keys)
         ]
 
     # ── Fallback 2 : n'importe quel modèle avec clé disponible ───────────────
@@ -638,7 +659,7 @@ async def select_model(
         candidates = [
             (mid, meta)
             for mid, meta in MODEL_REGISTRY.items()
-            if _provider_has_key(meta["provider"])
+            if _provider_has_key(meta["provider"], provider_api_keys)
         ]
 
     if not candidates:
@@ -694,6 +715,7 @@ async def call_llm_via_litellm(
     messages: List[Dict[str, str]],
     max_tokens: int = 2048,
     system: Optional[str] = None,
+    provider_api_keys: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """
     Appel LLM non-streaming via LiteLLM.
@@ -713,15 +735,20 @@ async def call_llm_via_litellm(
     _ensure_litellm_keys()
     litellm_model_id = resolve_provider_model("anthropic", litellm_model_id) if litellm_model_id.startswith("claude-") else litellm_model_id
     full_messages = _build_messages(messages, system)
+    provider = _provider_from_litellm_model(litellm_model_id)
+    api_key = _provider_key(provider, provider_api_keys) if provider else ""
+    kwargs: Dict[str, Any] = {
+        "model": litellm_model_id,
+        "messages": full_messages,
+        "max_tokens": max_tokens,
+        "temperature": 0.7,
+    }
+    if _is_real_key(api_key):
+        kwargs["api_key"] = api_key
 
     try:
         response = await asyncio.wait_for(
-            litellm.acompletion(
-                model=litellm_model_id,
-                messages=full_messages,
-                max_tokens=max_tokens,
-                temperature=0.7,
-            ),
+            litellm.acompletion(**kwargs),
             timeout=30.0,
         )
         usage = getattr(response, "usage", None)
@@ -751,6 +778,7 @@ async def stream_llm_via_litellm(
     messages: List[Dict[str, str]],
     max_tokens: int = 2048,
     system: Optional[str] = None,
+    provider_api_keys: Optional[Dict[str, str]] = None,
 ) -> AsyncGenerator[str, None]:
     """
     Appel LLM en streaming via LiteLLM.
@@ -761,16 +789,21 @@ async def stream_llm_via_litellm(
     _ensure_litellm_keys()
     litellm_model_id = resolve_provider_model("anthropic", litellm_model_id) if litellm_model_id.startswith("claude-") else litellm_model_id
     full_messages = _build_messages(messages, system)
+    provider = _provider_from_litellm_model(litellm_model_id)
+    api_key = _provider_key(provider, provider_api_keys) if provider else ""
+    kwargs: Dict[str, Any] = {
+        "model": litellm_model_id,
+        "messages": full_messages,
+        "max_tokens": max_tokens,
+        "temperature": 0.7,
+        "stream": True,
+    }
+    if _is_real_key(api_key):
+        kwargs["api_key"] = api_key
 
     try:
         response = await asyncio.wait_for(
-            litellm.acompletion(
-                model=litellm_model_id,
-                messages=full_messages,
-                max_tokens=max_tokens,
-                temperature=0.7,
-                stream=True,
-            ),
+            litellm.acompletion(**kwargs),
             timeout=30.0,
         )
         async for chunk in response:

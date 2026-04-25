@@ -10,9 +10,11 @@ from pydantic import BaseModel, EmailStr, Field
 
 from app.api.routes.auth import (
     TokenData,
+    decrypt_provider_api_keys,
     _get_redis,
     _enforce_password,
     _get_user,
+    _normalize_provider_api_keys,
     _set_user,
     get_current_user,
     verify_password,
@@ -79,8 +81,11 @@ async def _scan_keys(redis, pattern: str, count: int = 100) -> list[str]:
     return keys
 
 
-def _provider_api_keys_status(user: dict | None) -> dict[str, bool]:
-    provider_api_keys = (user or {}).get("provider_api_keys") or {}
+def _provider_api_keys_status(user: dict | None, user_id: str = "") -> dict[str, bool]:
+    provider_api_keys = decrypt_provider_api_keys(
+        (user or {}).get("provider_api_keys_encrypted"),
+        user_id,
+    )
     return {
         "openai": bool(str(provider_api_keys.get("openai", "") or "").strip()),
         "anthropic": bool(str(provider_api_keys.get("anthropic", "") or "").strip()),
@@ -191,7 +196,7 @@ async def get_me_profile(
         is_active=user.get("is_active", True),
         retention_days=settings.PROJECT_TTL_DAYS,
         tokens_month=usage.total_tokens,
-        provider_api_keys_configured=_provider_api_keys_status(user),
+        provider_api_keys_configured=_provider_api_keys_status(user, current_user.username),
     )
 
 
@@ -211,11 +216,22 @@ async def update_me(
         user["email"] = email
 
     if body.provider_api_keys is not None:
-        current_keys = dict(user.get("provider_api_keys") or {})
+        try:
+            current_keys = decrypt_provider_api_keys(
+                user.get("provider_api_keys_encrypted"),
+                current_user.username,
+                strict=True,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Impossible de lire les cles fournisseur existantes.",
+            ) from exc
         for provider in ("openai", "anthropic", "google", "mistral"):
             if provider in body.provider_api_keys:
                 current_keys[provider] = str(body.provider_api_keys.get(provider, "") or "").strip()
-        user["provider_api_keys"] = current_keys
+        user["provider_api_keys_encrypted"] = _normalize_provider_api_keys(current_keys)
+        user.pop("provider_api_keys", None)
 
     await _set_user(current_user.username, user)
 
@@ -236,7 +252,7 @@ async def update_me(
         is_active=user.get("is_active", True),
         retention_days=settings.PROJECT_TTL_DAYS,
         tokens_month=(await get_monthly_usage(current_user.username)).total_tokens,
-        provider_api_keys_configured=_provider_api_keys_status(user),
+        provider_api_keys_configured=_provider_api_keys_status(user, current_user.username),
     )
 
 

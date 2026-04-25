@@ -42,7 +42,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from typing import AsyncGenerator, List, Optional
+from typing import AsyncGenerator, Dict, List, Optional
 
 import anthropic
 import openai
@@ -52,6 +52,28 @@ from app.core.router import resolve_provider_model
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+_PLACEHOLDER_KEY_FRAGMENTS = (
+    "remplacer", "change_me", "changeme", "your_key", "placeholder", "xxx", "todo",
+)
+
+
+def _is_real_key(key: str) -> bool:
+    if not key:
+        return False
+    low = key.lower()
+    return not any(frag in low for frag in _PLACEHOLDER_KEY_FRAGMENTS)
+
+
+def _provider_api_key(provider: str, provider_api_keys: Optional[Dict[str, str]] = None) -> str:
+    user_key = str((provider_api_keys or {}).get(provider, "") or "").strip()
+    if _is_real_key(user_key):
+        return user_key
+    settings_keys = {
+        "anthropic": settings.ANTHROPIC_API_KEY,
+        "openai": settings.OPENAI_API_KEY,
+    }
+    return str(settings_keys.get(provider, "") or "").strip()
 
 
 # ---------------------------------------------------------------------------
@@ -78,9 +100,10 @@ async def _call_anthropic(
     messages: List[dict],
     max_tokens: int,
     system: Optional[str],
+    api_key: str,
 ) -> dict:
     resolved_model = resolve_provider_model("anthropic", model)
-    client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+    client = anthropic.AsyncAnthropic(api_key=api_key)
     kwargs: dict = dict(model=resolved_model, max_tokens=max_tokens, messages=messages)
     if system:
         kwargs["system"] = system
@@ -109,9 +132,10 @@ async def _stream_anthropic(
     messages: List[dict],
     max_tokens: int,
     system: Optional[str],
+    api_key: str,
 ) -> AsyncGenerator[str, None]:
     resolved_model = resolve_provider_model("anthropic", model)
-    client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+    client = anthropic.AsyncAnthropic(api_key=api_key)
     kwargs: dict = dict(model=resolved_model, max_tokens=max_tokens, messages=messages)
     if system:
         kwargs["system"] = system
@@ -137,8 +161,9 @@ async def _call_openai(
     messages: List[dict],
     max_tokens: int,
     system: Optional[str],
+    api_key: str,
 ) -> dict:
-    client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+    client = openai.AsyncOpenAI(api_key=api_key)
     msgs = ([{"role": "system", "content": system}] + messages) if system else messages
     response = await client.chat.completions.create(
         model=model,
@@ -160,8 +185,9 @@ async def _stream_openai(
     messages: List[dict],
     max_tokens: int,
     system: Optional[str],
+    api_key: str,
 ) -> AsyncGenerator[str, None]:
-    client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+    client = openai.AsyncOpenAI(api_key=api_key)
     msgs = ([{"role": "system", "content": system}] + messages) if system else messages
     stream = await client.chat.completions.create(
         model=model,
@@ -185,6 +211,7 @@ async def call_llm(
     messages: List[dict],
     max_tokens: int = 2048,
     system: Optional[str] = None,
+    provider_api_keys: Optional[Dict[str, str]] = None,
 ) -> dict:
     """Retourne la réponse LLM complète et, si disponible, l'usage provider."""
     logger.debug(
@@ -192,9 +219,21 @@ async def call_llm(
         provider, model, len(messages),
     )
     if provider == "anthropic":
-        return await _call_anthropic(model, messages, max_tokens, system)
+        return await _call_anthropic(
+            model,
+            messages,
+            max_tokens,
+            system,
+            _provider_api_key(provider, provider_api_keys),
+        )
     if provider == "openai":
-        return await _call_openai(model, messages, max_tokens, system)
+        return await _call_openai(
+            model,
+            messages,
+            max_tokens,
+            system,
+            _provider_api_key(provider, provider_api_keys),
+        )
     raise ValueError(f"Provider inconnu : {provider!r}")
 
 
@@ -204,6 +243,7 @@ async def stream_llm_response(
     messages: List[dict],
     max_tokens: int = 2048,
     system: Optional[str] = None,
+    provider_api_keys: Optional[Dict[str, str]] = None,
 ) -> AsyncGenerator[str, None]:
     """Async generator — yield les chunks texte bruts du LLM."""
     logger.debug(
@@ -211,10 +251,22 @@ async def stream_llm_response(
         provider, model, len(messages),
     )
     if provider == "anthropic":
-        async for chunk in _stream_anthropic(model, messages, max_tokens, system):
+        async for chunk in _stream_anthropic(
+            model,
+            messages,
+            max_tokens,
+            system,
+            _provider_api_key(provider, provider_api_keys),
+        ):
             yield chunk
     elif provider == "openai":
-        async for chunk in _stream_openai(model, messages, max_tokens, system):
+        async for chunk in _stream_openai(
+            model,
+            messages,
+            max_tokens,
+            system,
+            _provider_api_key(provider, provider_api_keys),
+        ):
             yield chunk
     else:
         raise ValueError(f"Provider inconnu : {provider!r}")

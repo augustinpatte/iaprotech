@@ -80,6 +80,7 @@ class LiteLLMRouterAdapter(LLMRouterInterface):
         max_tokens: int = 2048,
         system: Optional[str] = None,
         provider: Optional[str] = None,
+        provider_api_keys: Optional[dict[str, str]] = None,
     ) -> Result:
         try:
             if provider in {"anthropic", "openai"}:
@@ -91,6 +92,7 @@ class LiteLLMRouterAdapter(LLMRouterInterface):
                     messages=messages,
                     max_tokens=max_tokens,
                     system=system,
+                    provider_api_keys=provider_api_keys,
                 )
             else:
                 from app.core.router import call_llm_via_litellm  # noqa: PLC0415
@@ -100,6 +102,7 @@ class LiteLLMRouterAdapter(LLMRouterInterface):
                     messages=messages,
                     max_tokens=max_tokens,
                     system=system,
+                    provider_api_keys=provider_api_keys,
                 )
             return ok(response)
         except Exception as exc:
@@ -119,6 +122,7 @@ class LiteLLMRouterAdapter(LLMRouterInterface):
         max_tokens: int = 2048,
         system: Optional[str] = None,
         provider: Optional[str] = None,
+        provider_api_keys: Optional[dict[str, str]] = None,
     ) -> AsyncGenerator[str, None]:
         try:
             if provider in {"anthropic", "openai"}:
@@ -130,6 +134,7 @@ class LiteLLMRouterAdapter(LLMRouterInterface):
                     messages=messages,
                     max_tokens=max_tokens,
                     system=system,
+                    provider_api_keys=provider_api_keys,
                 ):
                     yield chunk
                 return
@@ -141,6 +146,7 @@ class LiteLLMRouterAdapter(LLMRouterInterface):
                 messages=messages,
                 max_tokens=max_tokens,
                 system=system,
+                provider_api_keys=provider_api_keys,
             ):
                 yield chunk
         except Exception as exc:
