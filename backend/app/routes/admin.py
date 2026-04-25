@@ -158,24 +158,31 @@ def _serialize_user(username: str, data: dict, usage) -> dict:
 @limiter.limit("30/minute")
 async def list_users(
     request: Request,
+    org_id: Optional[str] = None,
     page: int = 1,
     limit: int = 50,
     admin: TokenData = Depends(_require_admin),
 ):
     r = await _get_redis()
     limit = max(1, min(limit, 200))
+    effective_org_id = _resolve_audit_org_id(admin, org_id)
     all_usernames = await _get_usernames(r)
-    total = len(all_usernames)
-    pages = max(1, (total + limit - 1) // limit) if total else 1
-    page = max(1, min(page, pages))
-    start = (page - 1) * limit
-    usernames = all_usernames[start:start + limit]
-    users = []
-    for username in usernames:
+    scoped_users = []
+    for username in all_usernames:
         raw = await r.get(f"user:{username}")
         if not raw:
             continue
         data = json.loads(raw)
+        if data.get("org_id", "") != effective_org_id:
+            continue
+        scoped_users.append((username, data))
+    total = len(scoped_users)
+    pages = max(1, (total + limit - 1) // limit) if total else 1
+    page = max(1, min(page, pages))
+    start = (page - 1) * limit
+    page_users = scoped_users[start:start + limit]
+    users = []
+    for username, data in page_users:
         usage = await get_monthly_usage(username)
         users.append(_serialize_user(username, data, usage))
     users.sort(key=lambda u: u["created_at"], reverse=True)
@@ -658,7 +665,21 @@ async def get_logs(
 
 
 def _resolve_audit_org_id(admin: TokenData, org_id: Optional[str]) -> Optional[str]:
-    return org_id or admin.org_id or None
+    requested_org_id = (org_id or "").strip()
+    admin_org_id = (admin.org_id or "").strip()
+    if requested_org_id:
+        if requested_org_id != admin_org_id:
+            logger.warning(
+                "admin.cross_org_attempt | admin=%s | requested_org=%s",
+                _h(admin.username),
+                _h(requested_org_id),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Acces a une autre organisation interdit",
+            )
+        return requested_org_id
+    return admin_org_id or None
 
 
 @router.get("/audit", summary="Derniers evenements d'audit Redis")
