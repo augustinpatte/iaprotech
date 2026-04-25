@@ -4,15 +4,17 @@ Vault — stockage chiffre AES-256-GCM des mappings tokens <-> donnees reelles.
 Architecture :
   - Chaque session recoit un UUID isole -> cle Redis : vault:{user_id}:{session_id}
   - Le mapping entier est serialise JSON, chiffre AES-256-GCM, stocke Redis + TTL
-  - La cle AES est derivee de VAULT_ENCRYPTION_KEY via PBKDF2-HMAC-SHA256
-    avec sel aleatoire par entree (integre au blob chiffre)
+  - La cle AES est derivee par org via HKDF-SHA256, puis par blob via
+    PBKDF2-HMAC-SHA256 avec sel aleatoire par entree (integre au blob chiffre)
   - Circuit breaker : 3 echecs Redis consecutifs -> OPEN (HTTP 503 explicite)
     Mode degrade jamais silencieux — toujours logue et signale.
   - Fallback memoire thread-safe UNIQUEMENT en CLOSED avec < 3 echecs (dev/test)
   - Implementer VaultInterface pour le decouplage via Depends()
 
 Format blob chiffre (bytes concatenes) :
-  [ sel : 16 B ][ iv : 12 B ][ tag : 16 B ][ ciphertext : N B ]
+  v1 legacy: [ sel : 16 B ][ iv : 12 B ][ tag : 16 B ][ ciphertext : N B ]
+  v2:        [ 0x02 : 1 B ][ key_version : 1 B ][ sel : 16 B ][ iv : 12 B ]
+             [ tag : 16 B ][ ciphertext : N B ]
 
 Logs : session_id uniquement — aucune donnee sensible exposee.
 """
@@ -31,14 +33,15 @@ from typing import Dict, Optional
 
 import redis.asyncio as aioredis
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from app.api.exception_handlers import VaultError
 from app.config import settings
 from app.core.result import Result, ok, err
 from app.core.interfaces import VaultInterface
-from app.utils.logger import get_logger
+from app.utils.logger import get_logger, hash_id as _h
 
 logger = get_logger(__name__)
 
@@ -51,7 +54,12 @@ _TAG_SIZE    = 16   # octets  -- tag d'authentification GCM
 _PBKDF2_ITER = 100_000
 _KEY_SIZE    = 32   # octets  -- AES-256
 
-_BLOB_HEADER = _SALT_SIZE + _IV_SIZE + _TAG_SIZE  # 44 octets de header
+VAULT_BLOB_VERSION = 0x02
+VAULT_DEFAULT_KEY_VERSION = 0x01
+VAULT_LEGACY_HEADER_DETECTION = "first byte != 0x02"
+
+_BLOB_HEADER = _SALT_SIZE + _IV_SIZE + _TAG_SIZE  # 44 octets de header legacy
+_BLOB_HEADER_V2 = 1 + 1 + _SALT_SIZE + _IV_SIZE + _TAG_SIZE
 
 
 # ---------------------------------------------------------------------------
@@ -140,11 +148,25 @@ def _derive_key(master_key_bytes: bytes, salt: bytes) -> bytes:
     return kdf.derive(master_key_bytes)
 
 
+def _derive_org_master(master_key: bytes, org_id: str, key_version: int) -> bytes:
+    if not org_id:
+        raise ValueError("org_id requis pour deriver la cle vault")
+    if not 1 <= key_version <= 255:
+        raise ValueError("key_version doit tenir sur 1 byte")
+    kdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=_KEY_SIZE,
+        salt=b"",
+        info=b"vault:org:" + org_id.encode("utf-8") + b":v" + bytes([key_version]),
+    )
+    return kdf.derive(master_key)
+
+
 # ---------------------------------------------------------------------------
 # Chiffrement / dechiffrement AES-256-GCM
 # ---------------------------------------------------------------------------
 
-def _encrypt(plaintext: bytes, master_key_bytes: bytes) -> bytes:
+def _encrypt_v1(plaintext: bytes, master_key_bytes: bytes) -> bytes:
     salt = os.urandom(_SALT_SIZE)
     iv   = os.urandom(_IV_SIZE)
     key  = _derive_key(master_key_bytes, salt)
@@ -155,7 +177,24 @@ def _encrypt(plaintext: bytes, master_key_bytes: bytes) -> bytes:
     return salt + iv + tag + ciphertext
 
 
-def _decrypt(blob: bytes, master_key_bytes: bytes) -> bytes:
+def _encrypt_v2(
+    plaintext: bytes,
+    master_key_bytes: bytes,
+    org_id: str,
+    key_version: int,
+) -> bytes:
+    salt = os.urandom(_SALT_SIZE)
+    iv   = os.urandom(_IV_SIZE)
+    org_master = _derive_org_master(master_key_bytes, org_id, key_version)
+    key = _derive_key(org_master, salt)
+    aesgcm = AESGCM(key)
+    ct_tag = aesgcm.encrypt(iv, plaintext, None)
+    ciphertext = ct_tag[:-_TAG_SIZE]
+    tag        = ct_tag[-_TAG_SIZE:]
+    return bytes([VAULT_BLOB_VERSION, key_version]) + salt + iv + tag + ciphertext
+
+
+def _decrypt_v1(blob: bytes, master_key_bytes: bytes) -> bytes:
     if len(blob) < _BLOB_HEADER:
         raise ValueError(
             f"Blob trop court ({len(blob)} B, minimum {_BLOB_HEADER} B)"
@@ -169,20 +208,62 @@ def _decrypt(blob: bytes, master_key_bytes: bytes) -> bytes:
     return aesgcm.decrypt(iv, ciphertext + tag, None)
 
 
-def encrypt_data(plaintext: bytes, master_key: bytes | str) -> bytes:
-    if isinstance(master_key, str):
-        master_key_bytes = master_key.encode("utf-8")
-    else:
-        master_key_bytes = master_key
-    return _encrypt(plaintext, master_key_bytes)
+def _decrypt_v2(blob: bytes, master_key_bytes: bytes, org_id: str) -> bytes:
+    if len(blob) < _BLOB_HEADER_V2:
+        raise ValueError(
+            f"Blob v2 trop court ({len(blob)} B, minimum {_BLOB_HEADER_V2} B)"
+        )
+    key_version = blob[1]
+    salt_start = 2
+    salt_end = salt_start + _SALT_SIZE
+    iv_end = salt_end + _IV_SIZE
+    tag_end = iv_end + _TAG_SIZE
+    salt       = blob[salt_start:salt_end]
+    iv         = blob[salt_end:iv_end]
+    tag        = blob[iv_end:tag_end]
+    ciphertext = blob[tag_end:]
+    org_master = _derive_org_master(master_key_bytes, org_id, key_version)
+    key = _derive_key(org_master, salt)
+    aesgcm = AESGCM(key)
+    return aesgcm.decrypt(iv, ciphertext + tag, None)
 
 
-def decrypt_data(blob: bytes, master_key: bytes | str) -> bytes:
+def _master_key_bytes(master_key: bytes | str) -> bytes:
     if isinstance(master_key, str):
-        master_key_bytes = master_key.encode("utf-8")
-    else:
-        master_key_bytes = master_key
-    return _decrypt(blob, master_key_bytes)
+        return master_key.encode("utf-8")
+    return master_key
+
+
+def _is_v2_blob(blob: bytes) -> bool:
+    return bool(blob) and blob[0] == VAULT_BLOB_VERSION
+
+
+def encrypt_data(
+    plaintext: bytes,
+    master_key: bytes | str,
+    org_id: str,
+    key_version: int = VAULT_DEFAULT_KEY_VERSION,
+) -> bytes:
+    return _encrypt_v2(plaintext, _master_key_bytes(master_key), org_id, key_version)
+
+
+def decrypt_data(blob: bytes, master_key: bytes | str, org_id: str) -> bytes:
+    master_key_bytes = _master_key_bytes(master_key)
+    if _is_v2_blob(blob):
+        return _decrypt_v2(blob, master_key_bytes, org_id)
+    return _decrypt_v1(blob, master_key_bytes)
+
+
+def decrypt_and_migrate(
+    blob: bytes,
+    master_key: bytes | str,
+    org_id: str,
+) -> tuple[bytes, bytes]:
+    master_key_bytes = _master_key_bytes(master_key)
+    if _is_v2_blob(blob):
+        return _decrypt_v2(blob, master_key_bytes, org_id), blob
+    plaintext = _decrypt_v1(blob, master_key_bytes)
+    return plaintext, encrypt_data(plaintext, master_key_bytes, org_id)
 
 
 # ---------------------------------------------------------------------------
@@ -318,13 +399,13 @@ class Vault(VaultInterface):
     # Chiffrement / dechiffrement (wrappers async)
     # ------------------------------------------------------------------
 
-    def _encode(self, mapping: Dict[str, str]) -> bytes:
+    def _encode(self, mapping: Dict[str, str], org_id: str) -> bytes:
         plaintext = json.dumps(mapping, ensure_ascii=False).encode("utf-8")
-        return _encrypt(plaintext, self._master_key)
+        return encrypt_data(plaintext, self._master_key, org_id)
 
-    def _decode(self, blob: bytes) -> Dict[str, str]:
-        plaintext = _decrypt(blob, self._master_key)
-        return json.loads(plaintext.decode("utf-8"))
+    def _decode(self, blob: bytes, org_id: str) -> tuple[Dict[str, str], bytes]:
+        plaintext, migrated_blob = decrypt_and_migrate(blob, self._master_key, org_id)
+        return json.loads(plaintext.decode("utf-8")), migrated_blob
 
     # ------------------------------------------------------------------
     # VaultInterface — API Result (nouvelles routes / services)
@@ -378,10 +459,11 @@ class Vault(VaultInterface):
     ) -> bool:
         existing = await self.get_mapping(session_id, user_id=user_id) or {}
         existing.update(mapping)
+        org_id = await self._org_id_for_user(user_id)
 
         redis_key = self._redis_key(session_id, user_id)
         blob = await asyncio.get_running_loop().run_in_executor(
-            None, self._encode, existing
+            None, self._encode, existing, org_id
         )
 
         try:
@@ -439,9 +521,20 @@ class Vault(VaultInterface):
             return None
 
         try:
-            mapping = await asyncio.get_running_loop().run_in_executor(
-                None, self._decode, blob
+            org_id = await self._org_id_for_user(user_id)
+            mapping, migrated_blob = await asyncio.get_running_loop().run_in_executor(
+                None, self._decode, blob, org_id
             )
+            if migrated_blob != blob:
+                r = await self._get_redis()
+                if r:
+                    await r.setex(redis_key, self._ttl, migrated_blob)
+                elif self._memory_store is not None:
+                    self._memory_store.set(redis_key, migrated_blob, self._ttl)
+                logger.info(
+                    "vault.migrated_v1_to_v2 | user=%s | org=%s",
+                    _h(user_id), _h(org_id),
+                )
             return mapping
         except Exception as exc:
             logger.error(
@@ -535,6 +628,21 @@ class Vault(VaultInterface):
         if user_id:
             return f"vault:{user_id}:{session_id}"
         return f"vault:{session_id}"
+
+    async def _org_id_for_user(self, user_id: str) -> str:
+        if not user_id:
+            raise ValueError("user_id requis pour resoudre org_id vault")
+        r = await self._get_redis()
+        raw = await r.get(f"user:{user_id}") if r else None
+        if raw is None:
+            raise ValueError("org_id introuvable pour user vault")
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        data = json.loads(raw)
+        org_id = str(data.get("org_id") or "").strip()
+        if not org_id:
+            raise ValueError("org_id vide pour user vault")
+        return org_id
 
     @property
     def circuit_state(self) -> str:

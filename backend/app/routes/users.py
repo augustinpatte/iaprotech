@@ -85,6 +85,7 @@ def _provider_api_keys_status(user: dict | None, user_id: str = "") -> dict[str,
     provider_api_keys = decrypt_provider_api_keys(
         (user or {}).get("provider_api_keys_encrypted"),
         user_id,
+        str((user or {}).get("org_id") or ""),
     )
     return {
         "openai": bool(str(provider_api_keys.get("openai", "") or "").strip()),
@@ -220,6 +221,7 @@ async def update_me(
             current_keys = decrypt_provider_api_keys(
                 user.get("provider_api_keys_encrypted"),
                 current_user.username,
+                user.get("org_id", ""),
                 strict=True,
             )
         except Exception as exc:
@@ -230,7 +232,10 @@ async def update_me(
         for provider in ("openai", "anthropic", "google", "mistral"):
             if provider in body.provider_api_keys:
                 current_keys[provider] = str(body.provider_api_keys.get(provider, "") or "").strip()
-        user["provider_api_keys_encrypted"] = _normalize_provider_api_keys(current_keys)
+        user["provider_api_keys_encrypted"] = _normalize_provider_api_keys(
+            current_keys,
+            user.get("org_id", ""),
+        )
         user.pop("provider_api_keys", None)
 
     await _set_user(current_user.username, user)

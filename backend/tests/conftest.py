@@ -9,6 +9,7 @@ Mocks :
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from typing import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -65,6 +66,9 @@ async def fake_redis():
 async def vault(fake_redis):
     """Vault instance avec Redis mocke."""
     from app.core.vault import Vault  # noqa: PLC0415
+    for username in ("alice", "charlie", "dave"):
+        payload = json.dumps({"org_id": f"org-{username}"})
+        await fake_redis.set(f"user:{username}", payload.encode("utf-8"))
     v = Vault()
     v._redis = fake_redis
     v._cb._failures = 0

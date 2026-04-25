@@ -44,7 +44,7 @@ from app.core.file_processor import (
 from app.core.policy_engine import ProtectionMode, get_effective_policy
 from app.core.usage_tracker import estimate_local_processing_cost, track_usage
 from app.core.redactor import get_shared_redactor
-from app.core.vault import Vault, decrypt_data, encrypt_data
+from app.core.vault import Vault, decrypt_and_migrate, encrypt_data
 from app.middleware.rate_limit import limiter
 from app.utils.logger import get_logger, hash_id as _h
 
@@ -419,6 +419,7 @@ async def _process_upload_content(
                 encrypted_workbook = encrypt_data(
                     process_result["workbook_bytes"],
                     settings.VAULT_ENCRYPTION_KEY,
+                    org_id,
                 )
                 await _redis_ex.setex(
                     _excel_workbook_key(user_id, session_id),
@@ -967,10 +968,21 @@ async def excel_export(
             namespaced_key = _excel_workbook_key(current_user.username, body.session_id)
             encrypted_workbook = await _redis_xp.get(namespaced_key)
             if encrypted_workbook:
-                workbook_bytes = decrypt_data(
+                workbook_bytes, migrated_workbook = decrypt_and_migrate(
                     encrypted_workbook,
                     settings.VAULT_ENCRYPTION_KEY,
+                    org_id,
                 )
+                if migrated_workbook != encrypted_workbook:
+                    await _redis_xp.setex(
+                        namespaced_key,
+                        getattr(settings, "REDIS_TTL_SECONDS", 3600),
+                        migrated_workbook,
+                    )
+                    logger.info(
+                        "vault.migrated_v1_to_v2 | user=%s | org=%s",
+                        _h(current_user.username), _h(org_id),
+                    )
             else:
                 owner_probe = await _scan_keys(_redis_xp, f"excel_wb:*:{body.session_id}")
                 if owner_probe:

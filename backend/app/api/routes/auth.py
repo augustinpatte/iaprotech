@@ -27,7 +27,7 @@ from passlib.context import CryptContext
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.core.vault import decrypt_data, encrypt_data
+from app.core.vault import decrypt_and_migrate, decrypt_data, encrypt_data
 from app.core.result import Result, ok, err
 from app.middleware.rate_limit import limiter
 from app.utils.logger import get_logger, hash_id as _h
@@ -89,6 +89,7 @@ async def _get_user(username: str) -> Optional[dict]:
         return None
     data = json.loads(raw)
     data = await _migrate_legacy_provider_keys(username, data)
+    data = await _migrate_provider_api_keys_v2(username, data)
     return _normalize_user_record(username, data)
 
 
@@ -112,16 +113,17 @@ def _normalize_provider_api_keys_plain(data: Optional[dict]) -> dict:
     }
 
 
-def _normalize_provider_api_keys(data: Optional[dict]) -> str:
+def _normalize_provider_api_keys(data: Optional[dict], org_id: str) -> str:
     keys = _normalize_provider_api_keys_plain(data)
     plaintext = json.dumps(keys, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    blob = encrypt_data(plaintext, settings.VAULT_ENCRYPTION_KEY)
+    blob = encrypt_data(plaintext, settings.VAULT_ENCRYPTION_KEY, org_id)
     return base64.b64encode(blob).decode("ascii")
 
 
 def decrypt_provider_api_keys(
     encrypted: Optional[str],
     user_id: str = "",
+    org_id: str = "",
     *,
     strict: bool = False,
 ) -> dict:
@@ -129,7 +131,7 @@ def decrypt_provider_api_keys(
         return _normalize_provider_api_keys_plain(None)
     try:
         blob = base64.b64decode(str(encrypted).encode("ascii"), validate=True)
-        plaintext = decrypt_data(blob, settings.VAULT_ENCRYPTION_KEY)
+        plaintext = decrypt_data(blob, settings.VAULT_ENCRYPTION_KEY, org_id)
         data = json.loads(plaintext.decode("utf-8"))
         return _normalize_provider_api_keys_plain(data)
     except Exception as exc:
@@ -147,15 +149,21 @@ async def get_user_provider_api_keys(username: str) -> dict:
     user = await _get_user(username)
     if not user:
         return _normalize_provider_api_keys_plain(None)
-    return decrypt_provider_api_keys(user.get("provider_api_keys_encrypted"), username)
+    return decrypt_provider_api_keys(
+        user.get("provider_api_keys_encrypted"),
+        username,
+        user.get("org_id", ""),
+    )
 
 
 async def _migrate_legacy_provider_keys(username: str, user_record: dict) -> dict:
     if not isinstance(user_record.get("provider_api_keys"), dict):
         return user_record
     migrated = dict(user_record)
+    org_id = str(migrated.get("org_id") or "").strip()
     migrated["provider_api_keys_encrypted"] = _normalize_provider_api_keys(
-        migrated.get("provider_api_keys")
+        migrated.get("provider_api_keys"),
+        org_id,
     )
     migrated.pop("provider_api_keys", None)
     r = await _get_redis()
@@ -165,15 +173,49 @@ async def _migrate_legacy_provider_keys(username: str, user_record: dict) -> dic
     return migrated
 
 
+async def _migrate_provider_api_keys_v2(username: str, user_record: dict) -> dict:
+    encrypted = str(user_record.get("provider_api_keys_encrypted") or "").strip()
+    org_id = str(user_record.get("org_id") or "").strip()
+    if not encrypted or not org_id:
+        return user_record
+    try:
+        blob = base64.b64decode(encrypted.encode("ascii"), validate=True)
+        plaintext, migrated_blob = decrypt_and_migrate(
+            blob,
+            settings.VAULT_ENCRYPTION_KEY,
+            org_id,
+        )
+        json.loads(plaintext.decode("utf-8"))
+    except Exception:
+        return user_record
+    if migrated_blob == blob:
+        return user_record
+    migrated = dict(user_record)
+    migrated["provider_api_keys_encrypted"] = base64.b64encode(migrated_blob).decode("ascii")
+    r = await _get_redis()
+    if r is not None:
+        await r.set(f"user:{username}", json.dumps(migrated))
+        logger.info(
+            "vault.migrated_v1_to_v2 | user=%s | org=%s",
+            _h(username), _h(org_id),
+        )
+    return migrated
+
+
 def _normalize_user_record(username: str, data: Optional[dict]) -> dict:
     raw = dict(data or {})
+    org_id = str(raw.get("org_id") or "").strip()
     derived_status = "active" if raw.get("is_active", True) else "suspended"
     status_value = str(raw.get("status", derived_status) or derived_status).strip().lower()
     if status_value not in USER_STATUS_VALUES:
         status_value = derived_status
     provider_api_keys_encrypted = str(raw.get("provider_api_keys_encrypted") or "").strip()
     if not provider_api_keys_encrypted:
-        provider_api_keys_encrypted = _normalize_provider_api_keys(raw.get("provider_api_keys"))
+        if raw.get("provider_api_keys") is not None or org_id:
+            provider_api_keys_encrypted = _normalize_provider_api_keys(
+                raw.get("provider_api_keys"),
+                org_id,
+            )
 
     return {
         "username": username,
@@ -182,7 +224,7 @@ def _normalize_user_record(username: str, data: Optional[dict]) -> dict:
         "role": raw.get("role", "member"),
         "status": status_value,
         "plan": raw.get("plan"),
-        "org_id": raw.get("org_id") or "",
+        "org_id": org_id,
         "invited_by": raw.get("invited_by"),
         "invitations_used": int(raw.get("invitations_used", 0) or 0),
         "created_at": raw.get("created_at", ""),
