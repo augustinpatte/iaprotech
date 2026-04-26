@@ -2,7 +2,7 @@
 # Pour update : vérifier les nouvelles patches sur hub.docker.com, mettre à jour le tag, rebuilder, tester.
 # Cible de fréquence : trimestrielle.
 
-FROM node:20.20.2-alpine3.23 AS build
+FROM node:25.9.0-alpine3.23 AS build
 WORKDIR /app
 # package-lock.json requis — npm ci echoue explicitement si absent ou desynchronise
 COPY package.json package-lock.json ./
