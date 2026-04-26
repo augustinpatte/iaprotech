@@ -14,6 +14,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import jwt
+from jwt.exceptions import (
+    ExpiredSignatureError,
+    InvalidAudienceError,
+    InvalidIssuerError,
+    InvalidTokenError as JWTError,
+    MissingRequiredClaimError,
+)
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -28,10 +36,6 @@ JWT_AUDIENCE = "api"
 JWT_REQUIRED_CLAIMS = ["exp", "sub", "jti", "iat"]
 JWT_DECODE_OPTIONS = {
     "require": JWT_REQUIRED_CLAIMS,
-    "require_exp": True,
-    "require_sub": True,
-    "require_jti": True,
-    "require_iat": True,
 }
 
 PUBLIC_PATHS = frozenset({
@@ -88,8 +92,6 @@ class SecurityMiddleware(BaseHTTPMiddleware):
 
         # 2. Decodage JWT
         try:
-            from jose import ExpiredSignatureError, JWTError, jwt  # noqa: PLC0415
-            from jose.exceptions import JWTClaimsError  # noqa: PLC0415
             payload: dict = jwt.decode(
                 token,
                 settings.SECRET_KEY,
@@ -98,18 +100,19 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                 issuer=JWT_ISSUER,
                 options=JWT_DECODE_OPTIONS,
             )
-        except JWTClaimsError as exc:
-            message = str(exc).lower()
-            if "audience" in message:
-                logger.warning("jwt.invalid_claim | claim=%s", "aud")
-            elif "issuer" in message:
-                logger.warning("jwt.invalid_claim | claim=%s", "iss")
+        except InvalidAudienceError:
+            logger.warning("jwt.invalid_claim | claim=%s", "aud")
             return _unauthorized("Token JWT invalide.")
-        except Exception as exc:
-            from jose import ExpiredSignatureError  # noqa: PLC0415
-            if isinstance(exc, ExpiredSignatureError):
-                logger.info("security.jwt_expired | path=%s", path)
-                return _unauthorized("Token JWT expire. Reconnectez-vous.")
+        except InvalidIssuerError:
+            logger.warning("jwt.invalid_claim | claim=%s", "iss")
+            return _unauthorized("Token JWT invalide.")
+        except MissingRequiredClaimError as exc:
+            logger.warning("jwt.invalid_claim | claim=%s", exc.claim)
+            return _unauthorized("Token JWT invalide.")
+        except ExpiredSignatureError:
+            logger.info("security.jwt_expired | path=%s", path)
+            return _unauthorized("Token JWT expire. Reconnectez-vous.")
+        except JWTError as exc:
             logger.warning("security.jwt_invalid | path=%s | %s", path, type(exc).__name__)
             return _unauthorized("Token JWT invalide.")
 

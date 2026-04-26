@@ -19,11 +19,16 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 import re as _re
 
+import jwt
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from jose import JWTError, jwt
-from jose.exceptions import JWTClaimsError
+from jwt.exceptions import (
+    InvalidAudienceError,
+    InvalidIssuerError,
+    InvalidTokenError as JWTError,
+    MissingRequiredClaimError,
+)
 from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr, Field
 
@@ -42,10 +47,6 @@ JWT_AUDIENCE = "api"
 JWT_REQUIRED_CLAIMS = ["exp", "sub", "jti", "iat"]
 JWT_DECODE_OPTIONS = {
     "require": JWT_REQUIRED_CLAIMS,
-    "require_exp": True,
-    "require_sub": True,
-    "require_jti": True,
-    "require_iat": True,
 }
 
 
@@ -668,12 +669,14 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> TokenData:
         username: str = payload.get("sub", "")
         if not username:
             raise auth_exc
-    except JWTClaimsError as exc:
-        message = str(exc).lower()
-        if "audience" in message:
-            logger.warning("jwt.invalid_claim | claim=%s", "aud")
-        elif "issuer" in message:
-            logger.warning("jwt.invalid_claim | claim=%s", "iss")
+    except InvalidAudienceError:
+        logger.warning("jwt.invalid_claim | claim=%s", "aud")
+        raise auth_exc
+    except InvalidIssuerError:
+        logger.warning("jwt.invalid_claim | claim=%s", "iss")
+        raise auth_exc
+    except MissingRequiredClaimError as exc:
+        logger.warning("jwt.invalid_claim | claim=%s", exc.claim)
         raise auth_exc
     except JWTError:
         raise auth_exc
@@ -1004,12 +1007,22 @@ async def logout(
             if r:
                 await r.setex(f"jti_bl:{jti}", remaining, "1")
                 await _untrack_active_jti(current_user.username, jti)
-    except JWTClaimsError as exc:
-        message = str(exc).lower()
-        if "audience" in message:
-            logger.warning("jwt.invalid_claim | claim=%s", "aud")
-        elif "issuer" in message:
-            logger.warning("jwt.invalid_claim | claim=%s", "iss")
+    except InvalidAudienceError:
+        logger.warning("jwt.invalid_claim | claim=%s", "aud")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except InvalidIssuerError:
+        logger.warning("jwt.invalid_claim | claim=%s", "iss")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except MissingRequiredClaimError as exc:
+        logger.warning("jwt.invalid_claim | claim=%s", exc.claim)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
