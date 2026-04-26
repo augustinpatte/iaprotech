@@ -1,0 +1,52 @@
+# Pour rendre ce check bloquant : Settings → Branches → main → Add rule → Require status checks to pass before merging → Cocher "Security Scan / python-audit", "Security Scan / npm-audit", "Security Scan / image-scan".
+# Sans cette config, les checks tournent mais n'empêchent pas le merge.
+
+name: Security Scan
+
+on: [push, pull_request]
+
+jobs:
+  python-audit:
+    runs-on: ubuntu-latest
+    continue-on-error: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pip-audit
+      - run: |
+          if [ -f backend/requirements.lock ]; then
+            pip-audit -r backend/requirements.lock --skip-editable
+          else
+            pip-audit -r backend/requirements.txt --skip-editable
+          fi
+
+  npm-audit:
+    runs-on: ubuntu-latest
+    continue-on-error: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: cd frontend && npm ci --legacy-peer-deps
+      - run: cd frontend && npm audit --audit-level=high
+
+  image-scan:
+    runs-on: ubuntu-latest
+    continue-on-error: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "python:3.11.15-slim"
+          severity: "HIGH,CRITICAL"
+          exit-code: 1
+          ignore-unfixed: true
+      - uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "node:20.20.2-alpine3.23"
+          severity: "HIGH,CRITICAL"
+          exit-code: 1
+          ignore-unfixed: true
