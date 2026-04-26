@@ -24,6 +24,8 @@ services:
       - ENVIRONMENT=production
       - DEBUG=false
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+    volumes:
+      - backend_logs:/app/logs
     networks:
       - proxy_net
     depends_on:
@@ -35,6 +37,11 @@ services:
       timeout: 10s
       start_period: 180s
       retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "10"
 
   # ----------------------------------------------------------
   # Frontend — React (Vite build statique servi par Nginx interne)
@@ -49,6 +56,11 @@ services:
     restart: always
     networks:
       - proxy_net
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "10"
 
   # ----------------------------------------------------------
   # Redis — vault PII chiffré, AOF activé, refus des écritures si plein
@@ -77,6 +89,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "10"
 
   # ----------------------------------------------------------
   # Nginx — reverse proxy public (HTTP→HTTPS, SSL Let's Encrypt)
@@ -96,6 +113,11 @@ services:
     depends_on:
       - frontend
       - backend
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "10"
 
 # ----------------------------------------------------------
 # Réseau privé — backend et redis non exposés directement
@@ -108,5 +130,7 @@ networks:
 # Volumes persistants
 # ----------------------------------------------------------
 volumes:
+  backend_logs:
+    driver: local
   redis_data:
   nginx_cache:
