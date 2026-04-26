@@ -444,6 +444,12 @@ def validate_config() -> None:
             "SECURITY: BOOTSTRAP_ENABLED must be False in production. "
             "Set BOOTSTRAP_ENABLED=false in your .env after creating the first admin."
         )
+    if settings.ENVIRONMENT == "production" and settings.DEV_AUTO_CREATE_ADMIN:
+        raise RuntimeError(
+            "SECURITY: DEV_AUTO_CREATE_ADMIN must be False in production. "
+            "Set DEV_AUTO_CREATE_ADMIN=false in your .env. This setting reset admin "
+            "password on each startup and is intended for local dev only."
+        )
 
     errors: list[str] = []
 
