@@ -6,6 +6,8 @@
 *.pem
 *.crt
 *.p12
+*.rdb
+dump-*.rdb
 secrets/
 credentials/
 
