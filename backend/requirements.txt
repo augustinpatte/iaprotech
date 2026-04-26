@@ -1,3 +1,10 @@
+# ÉDITER CE FICHIER pour ajouter/modifier une dépendance.
+# PUIS recompiler le lock AVEC PYTHON 3.11 (version du runtime Docker) :
+#   docker run --rm -v "$(pwd):/work" -w /work python:3.11-slim \
+#     bash -c "pip install pip-tools && pip-compile requirements.txt --output-file requirements.lock --generate-hashes"
+# Le Dockerfile installe depuis requirements.lock, pas requirements.txt.
+# NE PAS éditer requirements.lock manuellement.
+
 fastapi>=0.109.0
 uvicorn>=0.27.0
 presidio-analyzer>=2.2.354
