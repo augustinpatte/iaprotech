@@ -16,7 +16,7 @@ services:
   # AOF (Append-Only File) : durabilité des données entre redémarrages
   # ----------------------------------------------------------
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.8-alpine
     restart: unless-stopped
     command: >
       redis-server
