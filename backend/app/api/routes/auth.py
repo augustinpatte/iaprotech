@@ -615,13 +615,26 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     expire = now + (
         expires_delta or timedelta(minutes=settings.TOKEN_EXPIRE_MINUTES)
     )
+    exp_min = (
+        settings.TOKEN_EXPIRE_MINUTES
+        if expires_delta is None
+        else int(expires_delta.total_seconds() / 60)
+    )
     to_encode.update({
         "exp": expire,
         "iss": JWT_ISSUER,
         "aud": JWT_AUDIENCE,
         "iat": int(now.timestamp()),
     })
-    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    token = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    jti_short = str(to_encode.get("jti", ""))[:12]
+    logger.info(
+        "auth.token_issued | user=%s | jti=%s | exp_min=%d",
+        _h(data.get("sub", "")),
+        _h(jti_short) if jti_short else "none",
+        exp_min,
+    )
+    return token
 
 
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> TokenData:

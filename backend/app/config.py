@@ -101,8 +101,12 @@ class Settings(BaseSettings):
     TOKEN_EXPIRE_MINUTES: int = Field(
         default=60,
         ge=5,
-        le=1440,
-        description="Durée de vie des tokens JWT en minutes (5 min – 24 h).",
+        le=120,
+        description=(
+            "Duree de vie des tokens JWT en minutes. Plafond 120 (2h) pour "
+            "limiter la fenetre d'exploitation des tokens voles. Valeur sup. "
+            "necessite refresh tokens (non implementes)."
+        ),
     )
 
     # Lire X-Forwarded-For pour l'IP reelle.
