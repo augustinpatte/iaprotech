@@ -6,8 +6,7 @@
 set -euo pipefail
 
 COMPOSE_FILE="docker-compose.prod.yml"
-BACKEND_URL="http://localhost:8000/health"
-FRONTEND_URL="http://localhost:3000/health"
+NGINX_URL="https://iaprotech.com/health"
 
 # Couleurs
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
@@ -72,9 +71,9 @@ fi
 
 # --- Sauvegarde Redis avant restart --------------------------------
 info "Sauvegarde Redis (BGSAVE)..."
-REDIS_PASS=$(grep '^REDIS_PASSWORD=' .env.prod | cut -d'=' -f2 | tr -d '"')
 if docker compose -f "$COMPOSE_FILE" ps redis | grep -q "running"; then
-    docker compose -f "$COMPOSE_FILE" exec -T redis redis-cli -a "$REDIS_PASS" BGSAVE 2>/dev/null || warn "BGSAVE ignoré (Redis non démarré)"
+    REDIS_PASS=$(grep '^REDIS_PASSWORD=' .env.prod | cut -d'=' -f2- | tr -d '"')
+    REDISCLI_AUTH="$REDIS_PASS" docker compose -f "$COMPOSE_FILE" exec -T -e REDISCLI_AUTH redis redis-cli BGSAVE > /dev/null 2>&1 || warn "BGSAVE ignoré (Redis non démarré ou auth échouée)"
 fi
 
 # --- Démarrage sans downtime (recreate) ----------------------------
@@ -88,7 +87,22 @@ sleep 30
 MAX_RETRIES=10
 RETRY_INTERVAL=10
 
-check_health() {
+check_backend_health() {
+    local retries=0
+    while [ $retries -lt $MAX_RETRIES ]; do
+        if docker compose -f "$COMPOSE_FILE" exec -T backend python -c "import urllib.request; r = urllib.request.urlopen('http://localhost:8000/health', timeout=5); raise SystemExit(0 if r.status == 200 else 1)" > /dev/null 2>&1; then
+            info "Backend : OK"
+            return 0
+        fi
+        retries=$((retries + 1))
+        warn "Backend non prêt ($retries/$MAX_RETRIES), nouvel essai dans ${RETRY_INTERVAL}s..."
+        sleep $RETRY_INTERVAL
+    done
+    error "Backend KO après $MAX_RETRIES tentatives"
+    return 1
+}
+
+check_url_health() {
     local url="$1"
     local name="$2"
     local retries=0
@@ -106,8 +120,8 @@ check_health() {
 }
 
 HEALTH_OK=true
-check_health "$BACKEND_URL"  "Backend"  || HEALTH_OK=false
-check_health "$FRONTEND_URL" "Frontend" || HEALTH_OK=false
+check_backend_health || HEALTH_OK=false
+check_url_health "$NGINX_URL" "Nginx" || HEALTH_OK=false
 
 # --- Nettoyage images obsolètes ------------------------------------
 info "Nettoyage des images Docker orphelines..."
