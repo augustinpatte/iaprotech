@@ -20,7 +20,6 @@ import base64
 import io
 import json
 import mimetypes
-import traceback
 from datetime import datetime, timezone
 from functools import partial
 from typing import Optional
@@ -634,11 +633,11 @@ async def run_upload_job_worker() -> None:
                 )
             except Exception as exc:
                 logger.error(
-                    "upload.worker_failed | job=%s | user=%s | error=%s | trace=%s",
+                    "upload.worker_failed | job=%s | user=%s | error=%s | exc_type=%s",
                     _h(job_id),
                     _h(user_id) if user_id else "?",
                     str(exc),
-                    traceback.format_exc(),
+                    type(exc).__name__,
                 )
                 await job_queue.set_result(
                     job_id,

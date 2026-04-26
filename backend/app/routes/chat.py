@@ -9,7 +9,6 @@ GET  /models      : liste des modeles disponibles
 from __future__ import annotations
 
 import asyncio
-import traceback
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
@@ -309,12 +308,12 @@ async def debug_test_anthropic(
         }
     except Exception as exc:
         logger.error(
-            "debug.test_anthropic_failed | user=%s | model=%s | resolved=%s | error=%s | trace=%s",
+            "debug.test_anthropic_failed | user=%s | model=%s | resolved=%s | error=%s | exc_type=%s",
             _h(current_user.username),
             configured_model,
             resolved_model,
             str(exc),
-            traceback.format_exc(),
+            type(exc).__name__,
         )
         return {
             "ok": False,

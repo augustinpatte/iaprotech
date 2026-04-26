@@ -14,7 +14,6 @@ import asyncio
 import json
 import re
 import time
-import traceback
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator, Dict, List, Optional
@@ -166,11 +165,11 @@ class ChatService:
             sanitised, _ = await self.pseudonymize_messages(messages, user_id, session_id, entities)
         except RuntimeError as exc:
             logger.error(
-                "chat_service.call_response.vault_unavailable | user=%s | session=%s | error=%s | trace=%s",
+                "chat_service.call_response.vault_unavailable | user=%s | session=%s | error=%s | exc_type=%s",
                 _h(user_id),
                 _h(session_id),
                 str(exc),
-                traceback.format_exc(),
+                type(exc).__name__,
             )
             return err("Vault temporairement indisponible", "VAULT_UNAVAILABLE")
 
