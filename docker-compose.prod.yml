@@ -51,7 +51,7 @@ services:
       - proxy_net
 
   # ----------------------------------------------------------
-  # Redis — vault PII chiffré, AOF activé, LRU si plein
+  # Redis — vault PII chiffré, AOF activé, refus des écritures si plein
   # ----------------------------------------------------------
   redis:
     image: redis:7-alpine
@@ -62,7 +62,12 @@ services:
       --appendonly yes
       --appendfsync everysec
       --maxmemory 1gb
-      --maxmemory-policy allkeys-lru
+      --maxmemory-policy noeviction
+      --rename-command FLUSHDB ""
+      --rename-command FLUSHALL ""
+      --rename-command CONFIG ""
+      --rename-command DEBUG ""
+      --rename-command KEYS ""
     volumes:
       - redis_data:/data
     networks:

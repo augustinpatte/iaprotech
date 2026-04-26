@@ -376,7 +376,17 @@ class Vault(VaultInterface):
                 )
                 await self._redis.ping()
                 self._cb.record_success()
-                logger.info("Vault: connexion Redis etablie (%s)", self._redis_url)
+                redis_target = (
+                    self._redis_url.split("@")[-1]
+                    if "@" in self._redis_url
+                    else self._redis_url
+                )
+                redis_label = (
+                    f"redis://[masked]@{redis_target}"
+                    if "@" in self._redis_url
+                    else redis_target
+                )
+                logger.info("Vault: connexion Redis etablie (%s)", redis_label)
             except Exception as exc:
                 self._cb.record_failure()
                 self._redis = None

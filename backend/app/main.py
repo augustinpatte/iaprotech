@@ -60,6 +60,27 @@ async def check_dependencies() -> None:
         settings.OCR_ENABLED = False
 
 
+async def _check_redis_memory_pressure() -> None:
+    try:
+        from app.api.routes.auth import _get_redis  # noqa: PLC0415
+
+        r = await _get_redis()
+        if r is None:
+            return
+        info = await r.info("memory")
+        used = int(info.get("used_memory", 0))
+        max_mem = int(info.get("maxmemory", 0))
+        if max_mem > 0 and used / max_mem > 0.8:
+            logger.warning(
+                "redis.memory_pressure | used=%d | max=%d | ratio=%.2f",
+                used,
+                max_mem,
+                used / max_mem,
+            )
+    except Exception as exc:
+        logger.warning("redis.memory_check_failed | %s", type(exc).__name__)
+
+
 # ---------------------------------------------------------------------------
 # Security headers middleware
 # ---------------------------------------------------------------------------
@@ -237,6 +258,7 @@ async def lifespan(app: FastAPI):
     try:
         validate_config()
         await check_dependencies()
+        await _check_redis_memory_pressure()
         await _ensure_dev_admin_credentials()
         await _prewarm_redactor()
         # Desactive temporairement la migration org auto au demarrage pour
