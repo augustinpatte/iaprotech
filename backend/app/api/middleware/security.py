@@ -43,6 +43,8 @@ PUBLIC_PATHS = frozenset({
     "/api/auth/register",
     "/api/auth/status",
     "/api/auth/bootstrap",
+    "/api/auth/forgot-password",
+    "/api/auth/reset-password",
 })
 
 _BEARER_PREFIX = "Bearer "

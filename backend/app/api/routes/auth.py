@@ -13,6 +13,7 @@ Security invariants:
 
 import json
 import base64
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
@@ -24,7 +25,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from jose.exceptions import JWTClaimsError
 from passlib.context import CryptContext
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 from app.config import settings
 from app.core.vault import decrypt_and_migrate, decrypt_data, encrypt_data
@@ -260,6 +261,14 @@ def _user_jti_key(username: str) -> str:
     return f"user:jti:{username}"
 
 
+def _password_reset_key(token: str) -> str:
+    return f"pwd_reset:{token}"
+
+
+def _email_to_username_key(email: str) -> str:
+    return f"email_to_username:{_h(email)}"
+
+
 async def _track_active_jti(username: str, jti: str, exp_ts: int) -> None:
     r = await _get_redis()
     if r is None:
@@ -278,6 +287,79 @@ async def _untrack_active_jti(username: str, jti: str) -> None:
         entry_str = str(entry)
         if entry_str.startswith(f"{jti}:"):
             await r.srem(_user_jti_key(username), entry)
+
+
+async def _find_user_by_email(email: str) -> Optional[str]:
+    normalized_email = email.strip().lower()
+    if not normalized_email:
+        return None
+    r = await _get_redis()
+    if r is None:
+        return None
+
+    index_key = _email_to_username_key(normalized_email)
+    indexed_username = await r.get(index_key)
+    if indexed_username:
+        user = await _get_user(str(indexed_username))
+        if user and (
+            str(user.get("email", "")).strip().lower() == normalized_email
+            or str(indexed_username).strip().lower() == normalized_email
+        ):
+            return str(indexed_username)
+        await r.delete(index_key)
+
+    usernames = sorted(str(member) for member in (await r.smembers("index:users")))
+    if not usernames:
+        cursor = 0
+        while True:
+            cursor, keys = await r.scan(cursor, match="user:*", count=100)
+            usernames.extend(
+                str(key)[5:] for key in keys if str(key).count(":") == 1
+            )
+            if cursor == 0:
+                break
+        usernames = sorted(set(usernames))
+        if usernames:
+            await r.sadd("index:users", *usernames)
+
+    for username in usernames:
+        user = await _get_user(username)
+        if user and (
+            str(user.get("email", "")).strip().lower() == normalized_email
+            or username.strip().lower() == normalized_email
+        ):
+            await r.set(index_key, username)
+            return username
+    return None
+
+
+def _generate_password_reset_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+async def _invalidate_all_user_tokens(username: str) -> None:
+    r = await _get_redis()
+    if r is None:
+        return
+    # Source de verite: les JTI actifs sont ecrits via _user_jti_key() au login.
+    key = _user_jti_key(username)
+    entries = await r.smembers(key)
+    if not entries:
+        return
+
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    pipe = r.pipeline()
+    for entry in entries:
+        entry_str = str(entry)
+        try:
+            jti, exp_raw = entry_str.rsplit(":", 1)
+            remaining = int(exp_raw) - now_ts
+        except ValueError:
+            continue
+        if remaining > 0:
+            pipe.setex(f"jti_bl:{jti}", remaining, "password_reset")
+    pipe.delete(key)
+    await pipe.execute()
 
 
 # ---------------------------------------------------------------------------
@@ -387,6 +469,10 @@ _LOGIN_IP_LIMIT          = 5    # tentatives max par IP par fenetre
 _LOGIN_IP_WINDOW         = 60   # secondes
 _LOGIN_LOCKOUT_THRESHOLD = 5    # echecs consecutifs avant lockout username
 _LOGIN_LOCKOUT_DURATION  = 900  # 15 minutes en secondes
+_PASSWORD_RESET_TTL_SECONDS = 3600
+_PASSWORD_RESET_NEUTRAL_MESSAGE = (
+    "Si un compte existe pour cet email, un lien de reinitialisation a ete envoye."
+)
 
 
 def _lockout_exception(ttl: int) -> HTTPException:
@@ -494,6 +580,15 @@ class RegisterRequest(BaseModel):
     email: Optional[str] = None
     invite_token: Optional[str] = None
     # Note : champ "role" absent intentionnellement — toujours attribue cote serveur
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(..., min_length=20, max_length=64)
+    new_password: str = Field(..., min_length=12, max_length=128)
 
 
 class BootstrapRequest(BaseModel):
@@ -724,6 +819,89 @@ async def bootstrap(request: Request, body: BootstrapRequest):
         created_at,
     )
     return UserOut(username=body.username, role="admin")
+
+
+@router.post("/forgot-password", status_code=200)
+@limiter.limit("3/hour")
+async def forgot_password(request: Request, body: ForgotPasswordRequest):
+    response = {"message": _PASSWORD_RESET_NEUTRAL_MESSAGE}
+    username: Optional[str] = None
+    token_was_stored = False
+    try:
+        username = await _find_user_by_email(str(body.email))
+        if username:
+            r = await _get_redis()
+            if r is None:
+                logger.warning("auth.password_reset_unavailable | redis=down")
+            else:
+                token = _generate_password_reset_token()
+                created_at = datetime.now(timezone.utc).isoformat()
+                await r.setex(
+                    _password_reset_key(token),
+                    _PASSWORD_RESET_TTL_SECONDS,
+                    json.dumps({"username": username, "created_at": created_at}),
+                )
+                token_was_stored = True
+                reset_link = f"{request.url_for('reset_password')}?token={token}"
+                # TODO INTEGRATION: brancher le mailer (Postmark/SES) à cet endroit pour envoyer le lien.
+                # Voir docs/INCIDENT_RESPONSE.md pour le template d'email.
+                # Pour le développement, le lien complet est loggé en DEBUG pour les tests E2E.
+                logger.debug(
+                    "auth.password_reset_link | user=%s | url=%s",
+                    _h(username),
+                    reset_link,
+                )
+                if settings.DEBUG:
+                    response["token"] = token
+    except Exception as exc:
+        logger.warning("auth.password_reset_request_failed | %s", type(exc).__name__)
+    logger.info(
+        "auth.password_reset_requested | user=%s | persisted=%s",
+        _h(username) if username else "none",
+        "true" if token_was_stored else "false",
+    )
+    return response
+
+
+@router.post("/reset-password", status_code=200)
+@limiter.limit("5/hour")
+async def reset_password(request: Request, body: ResetPasswordRequest):
+    r = await _get_redis()
+    if r is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Service temporairement indisponible.",
+        )
+
+    raw = await r.execute_command("GETDEL", _password_reset_key(body.token))
+    if not raw:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Lien invalide ou expire.",
+        )
+
+    try:
+        reset_data = json.loads(raw)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Lien invalide ou expire.",
+        ) from exc
+
+    username = str(reset_data.get("username") or "")
+    user = await _get_user(username)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Lien invalide ou expire.",
+        )
+
+    _enforce_password(body.new_password)
+    user["hashed_password"] = pwd_context.hash(body.new_password)
+    await _set_user(username, user)
+    await _invalidate_all_user_tokens(username)
+    logger.info("auth.password_reset_completed | user=%s", _h(username))
+    return {"detail": "Mot de passe reinitialise avec succes."}
 
 
 @router.post("/token", response_model=Token)
