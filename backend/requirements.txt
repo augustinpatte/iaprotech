@@ -51,3 +51,4 @@ pymupdf>=1.26.7
 python-dotenv>=1.2.2
 python-multipart>=0.0.26
 requests>=2.33.0
+urllib3>=2.7.0
