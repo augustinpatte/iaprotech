@@ -38,15 +38,12 @@ jobs:
     continue-on-error: false
     steps:
       - uses: actions/checkout@v4
-      - uses: aquasecurity/trivy-action@master
+      - name: Build backend image
+        run: docker build -t privacy-proxy-backend:scan ./backend
+      - name: Run Trivy scan
+        uses: aquasecurity/trivy-action@master
         with:
-          image-ref: "python:3.11.15-slim"
-          severity: "HIGH,CRITICAL"
-          exit-code: 1
-          ignore-unfixed: true
-      - uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: "node:20.20.2-alpine3.23"
+          image-ref: "privacy-proxy-backend:scan"
           severity: "HIGH,CRITICAL"
           exit-code: 1
           ignore-unfixed: true
