@@ -9,7 +9,9 @@ FROM python:3.11.15-slim AS deps
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
     build-essential \
     tesseract-ocr \
     tesseract-ocr-fra \
@@ -45,7 +47,9 @@ FROM python:3.11.15-slim AS runtime
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-fra \
     libglib2.0-0 \
