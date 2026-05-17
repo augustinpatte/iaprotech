@@ -10,6 +10,7 @@ FROM python:3.11.15-slim AS deps
 WORKDIR /app
 
 RUN apt-get update \
+    && mkdir -p /usr/share/man/man1 /usr/share/man/man7 \
     && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
     build-essential \
@@ -48,6 +49,7 @@ FROM python:3.11.15-slim AS runtime
 WORKDIR /app
 
 RUN apt-get update \
+    && mkdir -p /usr/share/man/man1 /usr/share/man/man7 \
     && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
     tesseract-ocr \
