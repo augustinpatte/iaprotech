@@ -20,6 +20,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt requirements.lock ./
+RUN pip install --no-cache-dir --upgrade \
+    "pip>=25.0" \
+    "setuptools>=80.9.0" \
+    "wheel>=0.46.2"
 RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
 # ============================================================
@@ -52,6 +56,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copier les packages Python installes (stage deps + models)
 COPY --from=models /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=models /usr/local/bin /usr/local/bin
+RUN pip install --no-cache-dir --upgrade \
+    "pip>=25.0" \
+    "setuptools>=80.9.0" \
+    "wheel>=0.46.2"
 
 # Copier le code de l'application
 ARG CACHEBUST=1
