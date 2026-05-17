@@ -28,9 +28,8 @@ pydantic>=2.6.0
 pydantic-settings>=2.1.0
 email-validator>=2.1.0
 slowapi>=0.1.9
-python-dotenv>=1.2.2
 aiofiles>=23.2.1
-litellm>=1.83.14
+litellm>=1.83.7,<1.83.14
 reportlab>=4.0.0
 pytesseract>=0.3.10
 openpyxl>=3.1.0
@@ -43,12 +42,18 @@ python-magic>=0.4.27
 PyYAML>=6.0.0
 
 # Pinning securite (override transitives — CVE 2026)
-aiohttp>=3.13.4
 cryptography>=46.0.6
 filelock>=3.20.3
 pillow>=12.2.0
 pymupdf>=1.26.7
-python-dotenv>=1.2.2
+# DECISIONS SECURITE TRACEES (litellm epingle ses deps en == strict) :
+# - aiohttp==3.13.3 (impose par litellm) : CVE-2026-22815/34516/34519/34520 neutralisees
+#   via DISABLE_AIOHTTP_TRANSPORT=True (litellm utilise httpx==0.28.1 a la place).
+# - python-dotenv==1.0.1 (impose par litellm) : CVE-2026-28684 non exploitable
+#   (set_key/unset_key non utilises, app en lecture seule du .env).
+# - litellm CVE-2026-40217 (fixee 1.83.10) : risque accepte, 1.83.10+ garde les memes
+#   pins problematiques. A revoir quand litellm assouplira ses contraintes.
+# Revue requise a chaque montee de version litellm.
 python-multipart>=0.0.26
 requests>=2.33.0
 urllib3>=2.7.0

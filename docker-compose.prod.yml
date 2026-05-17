@@ -24,6 +24,7 @@ services:
       - ENVIRONMENT=production
       - DEBUG=false
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - DISABLE_AIOHTTP_TRANSPORT=true
     volumes:
       - backend_logs:/app/logs
     networks:
