@@ -14,7 +14,7 @@ redis>=5.0.1
 cryptography>=46.0.6
 PyJWT>=2.8.0,<3
 passlib>=1.7.4
-python-multipart>=0.0.26
+python-multipart>=0.0.29
 httpx>=0.26.0
 anthropic>=0.25.0
 openai>=1.27.0
@@ -54,6 +54,6 @@ pymupdf>=1.26.7
 # - litellm CVE-2026-40217 (fixee 1.83.10) : risque accepte, 1.83.10+ garde les memes
 #   pins problematiques. A revoir quand litellm assouplira ses contraintes.
 # Revue requise a chaque montee de version litellm.
-python-multipart>=0.0.26
+python-multipart>=0.0.29
 requests>=2.33.0
 urllib3>=2.7.0
