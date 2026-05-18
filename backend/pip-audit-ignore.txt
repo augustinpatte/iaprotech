@@ -1,0 +1,14 @@
+# CVE acceptees et tracees — voir backend/requirements.txt section "DECISIONS SECURITE TRACEES".
+# Versions imposees par litellm (pins == stricts). Vecteurs neutralises (DISABLE_AIOHTTP_TRANSPORT,
+# python-dotenv lecture seule). A reevaluer a chaque montee de version litellm.
+CVE-2026-34513
+CVE-2026-34514
+CVE-2026-34515
+CVE-2026-34516
+CVE-2026-34517
+CVE-2026-34518
+CVE-2026-34519
+CVE-2026-34520
+CVE-2026-34525
+CVE-2026-22815
+CVE-2026-28684

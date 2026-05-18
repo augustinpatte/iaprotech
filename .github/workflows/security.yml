@@ -16,10 +16,11 @@ jobs:
           python-version: "3.11"
       - run: pip install pip-audit
       - run: |
+          PIP_AUDIT_IGNORE_ARGS="$(grep -Ev '^\s*(#|$)' backend/pip-audit-ignore.txt | sed 's/^/--ignore-vuln /' | tr '\n' ' ')"
           if [ -f backend/requirements.lock ]; then
-            pip-audit -r backend/requirements.lock --skip-editable
+            pip-audit -r backend/requirements.lock --skip-editable $PIP_AUDIT_IGNORE_ARGS
           else
-            pip-audit -r backend/requirements.txt --skip-editable
+            pip-audit -r backend/requirements.txt --skip-editable $PIP_AUDIT_IGNORE_ARGS
           fi
 
   npm-audit:
