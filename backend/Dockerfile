@@ -5,7 +5,7 @@
 # ============================================================
 # Stage 1 : dependances Python
 # ============================================================
-FROM python:3.11.15-slim AS deps
+FROM python:3.14.6-slim AS deps
 
 WORKDIR /app
 
@@ -44,7 +44,7 @@ RUN pip install --no-cache-dir --require-hashes \
 # ============================================================
 # Stage 3 : runtime final
 # ============================================================
-FROM python:3.11.15-slim AS runtime
+FROM python:3.14.6-slim AS runtime
 
 WORKDIR /app
 
